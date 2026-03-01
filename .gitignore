@@ -1,8 +1,17 @@
 # Idea
 .idea
 
+# Claude
+.claude
+
+# Gradle
+.gradle
+
 # Compiled class file
 *.class
+
+# Build dir
+**/build/
 
 # Log file
 *.log
