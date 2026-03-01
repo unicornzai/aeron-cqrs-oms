@@ -66,20 +66,24 @@ public class OmsApp {
 
         // Each downstream subscriber gets its own independent subscription position.
         // Aeron IPC supports multiple subscribers on the same stream — each sees all messages.
-        final Subscription commandStreamSub      = aeron.addSubscription(
+        final Subscription commandStreamSub          = aeron.addSubscription(
                 OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-        final Subscription eventStreamSubFill    = aeron.addSubscription(
+        final Subscription eventStreamSubAggregate  = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // OrderAggregateAgent (observes fills for state guards)
+        final Subscription eventStreamSubFill        = aeron.addSubscription(
                 OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // FillSimulatorHandler
-        final Subscription eventStreamSubDb      = aeron.addSubscription(
+        final Subscription eventStreamSubDb          = aeron.addSubscription(
                 OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // DatabaseReadModelStub (M4 replaces)
-        final Subscription eventStreamSubView    = aeron.addSubscription(
+        final Subscription eventStreamSubView        = aeron.addSubscription(
                 OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // ViewServerReadModel
 
         // ── 4. Agents ────────────────────────────────────────────────────────
         final SequencerAgent        sequencer  = new SequencerAgent(
                 commandIngressSub, eventIngressSub, commandStreamPub, eventStreamPub);
         final OrderIngressAgent     ingress    = new OrderIngressAgent(commandIngressPub);
-        final OrderAggregateAgent   aggregate  = new OrderAggregateAgent(commandStreamSub, eventIngressPub1);
+        // Aggregate observes the event stream to guard cancel/amend on FILLED/CANCELLED orders
+        final OrderAggregateAgent   aggregate  = new OrderAggregateAgent(
+                commandStreamSub, eventIngressPub1, eventStreamSubAggregate);
         final FillSimulatorHandler  fillSim    = new FillSimulatorHandler(eventStreamSubFill, eventIngressPub2);
         final DatabaseReadModelStub dbModel    = new DatabaseReadModelStub(eventStreamSubDb);
         final ViewServerReadModel   viewModel  = new ViewServerReadModel(eventStreamSubView);

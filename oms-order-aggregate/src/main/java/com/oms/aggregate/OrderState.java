@@ -20,19 +20,25 @@ public class OrderState {
     public final long quantity;
     // Mutable — transitions as events are applied
     public OrderStatus status;
+    public long currentPrice;       // = price initially; updated on amend
+    public long currentQuantity;    // = quantity initially; updated on amend
+    public long filledQuantity;     // cumulative fill from observed fill events
 
     public OrderState(
             long orderId, long accountId, String instrument,
             Side side, OrderType orderType, TimeInForce timeInForce,
             long price, long quantity, OrderStatus status) {
-        this.orderId      = orderId;
-        this.accountId    = accountId;
-        this.instrument   = instrument;
-        this.side         = side;
-        this.orderType    = orderType;
-        this.timeInForce  = timeInForce;
-        this.price        = price;
-        this.quantity     = quantity;
-        this.status       = status;
+        this.orderId         = orderId;
+        this.accountId       = accountId;
+        this.instrument      = instrument;
+        this.side            = side;
+        this.orderType       = orderType;
+        this.timeInForce     = timeInForce;
+        this.price           = price;
+        this.quantity        = quantity;
+        this.status          = status;
+        this.currentPrice    = price;
+        this.currentQuantity = quantity;
+        this.filledQuantity  = 0L;
     }
 }
