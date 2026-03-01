@@ -1,8 +1,7 @@
 # Aeron Component Reference — OMS POC
 
 This series of documents describes the key open-source Aeron components used in this
-Order Management System POC. They are written for a senior Java developer who is
-familiar with high-performance systems but new to Aeron specifically.
+Order Management System POC.
 
 ---
 

@@ -48,3 +48,7 @@ briefly on first use, then assume familiarity for the rest of the session.
 - For architectural decisions, use a short pros/cons table when trade-offs exist
 - If a task requires multiple files, list them clearly with file paths as headers
 - Flag TODOs and POC shortcuts explicitly with `// TODO(POC):` comments in code
+
+## Design & Architecture
+
+See [Design & Architecture](design-architecture.md) for full implementation details.
