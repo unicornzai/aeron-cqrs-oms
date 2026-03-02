@@ -59,5 +59,8 @@ public class DatabaseReadModelStub implements Agent {
             .append("[db-read-model] event templateId=").append(templateId)
             .append(" seq=").append(seq)
             .commit();
+        // TODO(POC): track lastProcessedSequence = seq.
+        //            On restart, replay Event Stream from Archive at checkpoint position
+        //            (same pattern as ViewServerReadModel). Implement when real DB upsert is added.
     }
 }

@@ -13,6 +13,7 @@ dependencies {
     implementation(project(":oms-api"))
     implementation(libs.aeron.driver)
     implementation(libs.aeron.client)
+    implementation(libs.aeron.archive)
     runtimeOnly(libs.gflog.core)
 }
 

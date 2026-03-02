@@ -9,8 +9,11 @@ import com.oms.sbe.CancelRejectedEventEncoder;
 import com.oms.sbe.MessageHeaderDecoder;
 import com.oms.sbe.MessageHeaderEncoder;
 import com.oms.sbe.NewOrderCommandDecoder;
+import com.oms.sbe.OrderAcceptedEventDecoder;
 import com.oms.sbe.OrderAcceptedEventEncoder;
+import com.oms.sbe.OrderAmendedEventDecoder;
 import com.oms.sbe.OrderAmendedEventEncoder;
+import com.oms.sbe.OrderCancelledEventDecoder;
 import com.oms.sbe.OrderCancelledEventEncoder;
 import com.oms.sbe.OrderFilledEventDecoder;
 import com.oms.sbe.OrderPartiallyFilledEventDecoder;
@@ -19,8 +22,12 @@ import com.oms.sbe.OrderType;
 import com.oms.sbe.RejectReason;
 import com.oms.sbe.Side;
 import com.oms.sbe.TimeInForce;
+import com.oms.common.OmsStreams;
+import io.aeron.Aeron;
+import io.aeron.Image;
 import io.aeron.Publication;
 import io.aeron.Subscription;
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
@@ -34,12 +41,22 @@ import java.util.Map;
  * Subscribes to the sequenced Command Stream (StreamId 1) and Event Stream (StreamId 2).
  * Validates commands, maintains order state, and publishes events to Event Ingress (StreamId 11).
  *
- * <p>Observes fill events from the Event Stream to guard cancel/amend on FILLED orders.
+ * <p>On startup, replays the full Event Stream from Archive to rebuild the in-memory
+ * {@code orders} map before accepting any live commands. This ensures correct duplicate
+ * detection and state-machine transitions after a process restart.
+ *
+ * <p>Observes fill events from the live Event Stream to guard cancel/amend on FILLED orders.
  * All state is single-threaded — only this agent's AgentRunner thread touches {@code orders}.
+ *
+ * TODO(POC): Archive replay blocks onStart() — live commands buffer in Aeron term buffer.
+ *            Size term buffer based on max replay duration × msg rate.
  */
 public class OrderAggregateAgent implements Agent {
 
     private static final Log log = LogFactory.getLog(OrderAggregateAgent.class);
+
+    private static final int  AGGREGATE_REPLAY_STREAM_ID = 20;
+    private static final long REPLAY_TIMEOUT_MS          = 10_000L;
 
     // Pre-allocated encoding state — never allocate inside doWork()
     private final UnsafeBuffer encodingBuffer = new UnsafeBuffer(new byte[512]);
@@ -56,20 +73,29 @@ public class OrderAggregateAgent implements Agent {
     private final OrderAmendedEventEncoder   amendedEncoder    = new OrderAmendedEventEncoder();
     private final CancelRejectedEventEncoder cancelRejEncoder  = new CancelRejectedEventEncoder();
 
+    // Pre-allocated replay decoders — reused across all replayed messages
+    private final OrderAcceptedEventDecoder  replayAcceptedDecoder  = new OrderAcceptedEventDecoder();
+    private final OrderCancelledEventDecoder replayCancelledDecoder = new OrderCancelledEventDecoder();
+    private final OrderAmendedEventDecoder   replayAmendedDecoder   = new OrderAmendedEventDecoder();
+
     private final Subscription commandStreamSub;
     private final Subscription eventStreamSub;
     private final Publication  eventIngressPub;
     private final FragmentHandler commandHandler;
     private final FragmentHandler eventHandler;
+    private final Aeron        aeron;
+    private final AeronArchive archive;
 
     // In-memory order book — single-threaded, HashMap is fine
     private final Map<Long, OrderState> orders = new HashMap<>();
 
     public OrderAggregateAgent(Subscription commandStreamSub, Publication eventIngressPub,
-                               Subscription eventStreamSub) {
+                               Subscription eventStreamSub, Aeron aeron, AeronArchive archive) {
         this.commandStreamSub = commandStreamSub;
         this.eventIngressPub  = eventIngressPub;
         this.eventStreamSub   = eventStreamSub;
+        this.aeron            = aeron;
+        this.archive          = archive;
         // Allocate handler references once — avoid lambda re-allocation on hot path
         this.commandHandler   = this::onCommandFragment;
         this.eventHandler     = this::onEventFragment;
@@ -85,14 +111,131 @@ public class OrderAggregateAgent implements Agent {
     @Override
     public String roleName() { return "order-aggregate"; }
 
+    /**
+     * Replays the full Event Stream from Archive position 0 to the recorded stop/live position.
+     * Blocks until replay image closes (i.e., Archive has delivered all requested bytes).
+     * Live commands are safely buffered in the Aeron term buffer during replay.
+     */
     @Override
     public void onStart() {
-        log.info().append("order-aggregate started").commit();
+        log.info().append("[aggregate] starting — replaying Event Stream from Archive...").commit();
+
+        final long[] foundRecordingId  = {-1L};
+        final long[] foundStopPosition = {AeronArchive.NULL_POSITION};
+
+        final int found = archive.listRecordingsForUri(
+                0, 1, OmsStreams.IPC, OmsStreams.EVENT_STREAM,
+                (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
+                 startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
+                 mtuLength, sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {
+                    foundRecordingId[0]  = recordingId;
+                    foundStopPosition[0] = stopPosition;  // NULL_POSITION if still active
+                });
+
+        if (found == 0 || foundRecordingId[0] < 0) {
+            log.info().append("[aggregate] no recording found — starting fresh").commit();
+            return;
+        }
+
+        final long recordingId = foundRecordingId[0];
+
+        // For a stopped recording (restart case), stopPosition has the persisted end position.
+        // For an active recording (same boot), fall back to the live position.
+        long currentPos = foundStopPosition[0];
+        if (currentPos == AeronArchive.NULL_POSITION) {
+            currentPos = archive.getRecordingPosition(recordingId);
+        }
+
+        if (currentPos <= 0) {
+            log.info().append("[aggregate] recording empty — starting fresh").commit();
+            return;
+        }
+
+        log.info().append("[aggregate] replaying recordingId=").append(recordingId)
+            .append(" length=").append(currentPos).commit();
+
+        final long replaySessionId = archive.startReplay(
+                recordingId, 0L, currentPos, OmsStreams.IPC, AGGREGATE_REPLAY_STREAM_ID);
+
+        try (final Subscription replaySub = aeron.addSubscription(
+                     OmsStreams.IPC, AGGREGATE_REPLAY_STREAM_ID)) {
+
+            final long deadlineMs = System.currentTimeMillis() + REPLAY_TIMEOUT_MS;
+            Image replayImage = null;
+            while (replayImage == null) {
+                replayImage = replaySub.imageBySessionId((int) replaySessionId);
+                if (System.currentTimeMillis() > deadlineMs) {
+                    throw new IllegalStateException("[aggregate] replay image connect timeout");
+                }
+                Thread.yield();
+            }
+
+            // Poll until the image closes — Archive closes it after delivering currentPos bytes.
+            while (!replayImage.isClosed()) {
+                final int frags = replayImage.poll(this::applyReplayEvent, 256);
+                if (frags == 0) Thread.yield();
+            }
+        }
+
+        log.info().append("[aggregate] replay complete — orders rebuilt=").append(orders.size()).commit();
     }
 
     @Override
     public void onClose() {
         log.info().append("order-aggregate closed").commit();
+    }
+
+    // ── Replay handler ────────────────────────────────────────────────────────
+
+    /**
+     * Applies archived Event Stream messages to reconstruct the in-memory {@code orders} map.
+     * Mirrors the live event observer but without any publishing or logging.
+     * Called only during {@link #onStart()} replay — never on the live hot path.
+     */
+    private void applyReplayEvent(DirectBuffer buffer, int offset, int length, Header header) {
+        headerDecoder.wrap(buffer, offset);
+        switch (headerDecoder.templateId()) {
+            case OrderAcceptedEventDecoder.TEMPLATE_ID -> {
+                replayAcceptedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                final long orderId = replayAcceptedDecoder.orderId();
+                orders.computeIfAbsent(orderId, id -> new OrderState(
+                        id, replayAcceptedDecoder.accountId(), replayAcceptedDecoder.instrument(),
+                        replayAcceptedDecoder.side(), replayAcceptedDecoder.orderType(),
+                        replayAcceptedDecoder.timeInForce(),
+                        replayAcceptedDecoder.price(), replayAcceptedDecoder.quantity(),
+                        OrderStatus.OPEN));
+            }
+            case OrderCancelledEventDecoder.TEMPLATE_ID -> {
+                replayCancelledDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                final OrderState s = orders.get(replayCancelledDecoder.orderId());
+                if (s != null) s.status = OrderStatus.CANCELLED;
+            }
+            case OrderAmendedEventDecoder.TEMPLATE_ID -> {
+                replayAmendedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                final OrderState s = orders.get(replayAmendedDecoder.orderId());
+                if (s != null) {
+                    s.currentPrice    = replayAmendedDecoder.newPrice();
+                    s.currentQuantity = replayAmendedDecoder.newQuantity();
+                }
+            }
+            case OrderFilledEventDecoder.TEMPLATE_ID -> {
+                filledDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                final OrderState s = orders.get(filledDecoder.orderId());
+                if (s != null) {
+                    s.filledQuantity += filledDecoder.fillQuantity();
+                    s.status = OrderStatus.FILLED;
+                }
+            }
+            case OrderPartiallyFilledEventDecoder.TEMPLATE_ID -> {
+                partialDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                final OrderState s = orders.get(partialDecoder.orderId());
+                if (s != null) {
+                    s.filledQuantity += partialDecoder.fillQuantity();
+                    s.status = OrderStatus.PARTIALLY_FILLED;
+                }
+            }
+            // OrderRejectedEvent(101), CancelRejectedEvent(106) — no state to rebuild, skip
+        }
     }
 
     // ── Command stream handler ────────────────────────────────────────────────
