@@ -43,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * The {@code ConcurrentHashMap} allows a future HTTP/WebSocket thread to read
  * {@link #getOrders()} without blocking the AgentRunner thread.
  *
- * TODO(POC): push snapshots to WebSocket clients in Milestone 5.
+ * M5: OrderEventListener fires onOrderUpdate() after each orders.put().
  * TODO(POC): fsync before rename for production durability
  * TODO(POC): size term buffer based on max replay duration × msg rate
  */
@@ -74,6 +74,11 @@ public class ViewServerReadModel implements Agent {
 
     // ConcurrentHashMap so a future query thread can read without locking the agent thread
     private final ConcurrentHashMap<Long, OrderView> orders = new ConcurrentHashMap<>();
+
+    private volatile OrderEventListener listener = null;
+
+    /** Called from main thread before AgentRunner.startOnThread(). Safe via volatile. */
+    public void setListener(final OrderEventListener l) { this.listener = l; }
 
     private long  checkpointPosition       = 0L;
     private long  recordingId              = -1L;
@@ -265,6 +270,8 @@ public class ViewServerReadModel implements Agent {
                 OrderStatus.OPEN);
 
         orders.put(view.orderId, view);
+        final OrderEventListener l0 = listener;
+        if (l0 != null) l0.onOrderUpdate(view.orderId, view);
         log.info().append("[view-server] ").append(view.toString()).commit();
     }
 
@@ -282,6 +289,8 @@ public class ViewServerReadModel implements Agent {
 
         final OrderView updated = existing.withFill(filledDecoder.fillPrice(), filledDecoder.fillQuantity());
         orders.put(orderId, updated);
+        final OrderEventListener l1 = listener;
+        if (l1 != null) l1.onOrderUpdate(orderId, updated);
         log.info().append("[view-server] ").append(updated.toString()).commit();
     }
 
@@ -308,6 +317,8 @@ public class ViewServerReadModel implements Agent {
 
         final OrderView updated = existing.withCancel();
         orders.put(orderId, updated);
+        final OrderEventListener l2 = listener;
+        if (l2 != null) l2.onOrderUpdate(orderId, updated);
         log.info().append("[view-server] ").append(updated.toString()).commit();
     }
 
@@ -325,6 +336,8 @@ public class ViewServerReadModel implements Agent {
 
         final OrderView updated = existing.withAmend(amendedDecoder.newPrice(), amendedDecoder.newQuantity());
         orders.put(orderId, updated);
+        final OrderEventListener l3 = listener;
+        if (l3 != null) l3.onOrderUpdate(orderId, updated);
         log.info().append("[view-server] ").append(updated.toString()).commit();
     }
 
@@ -343,6 +356,8 @@ public class ViewServerReadModel implements Agent {
         final OrderView updated = existing.withPartialFill(
                 partialDecoder.fillPrice(), partialDecoder.fillQuantity(), partialDecoder.remainingQty());
         orders.put(orderId, updated);
+        final OrderEventListener l4 = listener;
+        if (l4 != null) l4.onOrderUpdate(orderId, updated);
         log.info().append("[view-server] ").append(updated.toString()).commit();
     }
 

@@ -1,6 +1,7 @@
 package com.oms.app;
 
 import com.oms.aggregate.OrderAggregateAgent;
+import com.oms.api.OrderQueryServer;
 import com.oms.common.OmsStreams;
 import com.oms.handlers.FillSimulatorHandler;
 import com.oms.ingress.OrderIngressAgent;
@@ -130,6 +131,12 @@ public class OmsApp {
         final ViewServerReadModel   viewModel  = new ViewServerReadModel(
                 eventStreamSubView, aeron, archive);
 
+        // ── M5: Query server (port 8081) ──────────────────────────────────────
+        // Listener registered BEFORE startOnThread() — no updates can be missed.
+        final OrderQueryServer queryServer = new OrderQueryServer();
+        viewModel.setListener(queryServer);
+        queryServer.start(viewModel);
+
         // ── 6. AgentRunner threads ────────────────────────────────────────────
         // YieldingIdleStrategy: backs off with Thread.yield() when idle. Good balance of
         // latency vs CPU for a POC. Swap to BusySpinIdleStrategy for minimal latency in prod.
@@ -149,6 +156,7 @@ public class OmsApp {
         // then archive, then aeron, then driver.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             runners.forEach(r -> CloseHelper.quietClose(r));  // onClose() writes checkpoint
+            queryServer.stop();   // M5: stop Undertow after agent threads are down
             CloseHelper.quietClose(archive);
             CloseHelper.quietClose(aeron);
             CloseHelper.quietClose(archivingDriver);

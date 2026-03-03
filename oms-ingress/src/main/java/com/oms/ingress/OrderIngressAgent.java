@@ -73,7 +73,22 @@ public class OrderIngressAgent implements Agent {
             // POST /orders — new order
             httpServer.createContext("/orders", exchange -> {
                 try {
+                    // CORS — allow Swagger UI (port 8081) and any local client to call this server.
+                    exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+                    exchange.getResponseHeaders().set("Access-Control-Allow-Methods",
+                            "POST, DELETE, PATCH, OPTIONS");
+                    exchange.getResponseHeaders().set("Access-Control-Allow-Headers",
+                            "Content-Type, Accept");
+
                     final String method = exchange.getRequestMethod();
+
+                    // Browser pre-flight — respond 204 immediately.
+                    if ("OPTIONS".equalsIgnoreCase(method)) {
+                        exchange.sendResponseHeaders(204, -1);
+                        exchange.close();
+                        return;
+                    }
+
                     final String body = new String(
                             exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
 
