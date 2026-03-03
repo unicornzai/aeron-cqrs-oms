@@ -39,3 +39,8 @@ replay_pid*
 # OMS App generated files
 **/archive
 *.checkpoint
+**/fix-client-archive
+**/fix-client-logs
+**/fix-acceptor-archive
+**/fix-acceptor-logs
+

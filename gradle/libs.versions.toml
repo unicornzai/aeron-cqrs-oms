@@ -1,6 +1,7 @@
 [versions]
 aeron       = "1.44.1"
 agrona      = "1.21.1"
+artio       = "0.153"
 sbe         = "1.30.0"
 gflog       = "3.0.7"
 java        = "21"
@@ -15,5 +16,7 @@ agrona           = { module = "org.agrona:agrona",                       version
 sbe-tool         = { module = "uk.co.real-logic:sbe-tool",               version.ref = "sbe"      }
 gflog-api        = { module = "com.epam.deltix:gflog-api",               version.ref = "gflog"    }
 gflog-core       = { module = "com.epam.deltix:gflog-core",              version.ref = "gflog"    }
-undertow-core    = { module = "io.undertow:undertow-core",               version.ref = "undertow" }
-jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson"  }
+undertow-core        = { module = "io.undertow:undertow-core",                     version.ref = "undertow" }
+jackson-databind     = { module = "com.fasterxml.jackson.core:jackson-databind",   version.ref = "jackson"  }
+artio-core           = { module = "uk.co.real-logic:artio-core",                   version.ref = "artio"    }
+artio-session-codecs = { module = "uk.co.real-logic:artio-session-codecs",         version.ref = "artio"    }
