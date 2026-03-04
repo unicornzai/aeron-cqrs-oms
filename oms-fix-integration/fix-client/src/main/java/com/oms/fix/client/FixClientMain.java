@@ -14,6 +14,7 @@ import uk.co.real_logic.artio.library.SessionConfiguration;
 import uk.co.real_logic.artio.session.Session;
 
 import java.io.File;
+import java.nio.file.Paths;
 import java.util.Collections;
 
 /**
@@ -35,6 +36,8 @@ public class FixClientMain
     private static final int    ACCEPTOR_PORT   = 9880;
     private static final String LOG_DIR         = "./fix-client-logs";
     private static final String ARCHIVE_DIR     = "./fix-client-archive";
+    // Dedicated Aeron dir — prevents client dirDeleteOnStart from wiping the acceptor's live dir.
+    private static final String AERON_DIR       = "./aeron-fix-client";
 
     // Client archive on port 8020 — distinct from acceptor's 8010.
     private static final String ARCHIVE_CONTROL_CHANNEL     = "aeron:udp?endpoint=localhost:8020";
@@ -45,8 +48,15 @@ public class FixClientMain
 
     public static void main(final String[] args) throws Exception
     {
+        // Resolve the Aeron dir to a canonical absolute path ONCE so that all components
+        // (driver, archive, engine) use identical string paths and share the same CnC file.
+        final String aeronDirAbsolute = Paths.get(AERON_DIR).toAbsolutePath().normalize().toString();
+        // Force Artio's internal Aeron.connect() calls to use this same dir.
+        System.setProperty("aeron.dir", aeronDirAbsolute);
+
         // Step 1: Launch ArchivingMediaDriver for this process.
         final MediaDriver.Context driverCtx = new MediaDriver.Context()
+            .aeronDirectoryName(aeronDirAbsolute)
             .dirDeleteOnStart(true)
             .threadingMode(ThreadingMode.SHARED);
 
@@ -55,7 +65,8 @@ public class FixClientMain
             .deleteArchiveOnStart(true)
             .controlChannel(ARCHIVE_CONTROL_CHANNEL)
             .replicationChannel(ARCHIVE_REPLICATION_CHANNEL)
-            .recordingEventsEnabled(false);
+            .recordingEventsEnabled(false)
+            .aeronDirectoryName(aeronDirAbsolute);  // match the driver dir explicitly
 
         final ArchivingMediaDriver archivingMediaDriver =
             ArchivingMediaDriver.launch(driverCtx, archiveCtx);
@@ -86,6 +97,15 @@ public class FixClientMain
             .libraryAeronChannels(Collections.singletonList(LIBRARY_CHANNEL));
 
         final FixLibrary library = FixLibrary.connect(libraryCfg);
+
+        // Warm-up: poll ~500 ms to let the engine's Framer fully register this library
+        // before sending an initiate request. Without this, initiate() can immediately
+        // error with "Not connected to the Gateway" on a fast startup path.
+        for (int i = 0; i < 50; i++)
+        {
+            library.poll(10);
+            Thread.sleep(10);
+        }
 
         // Step 4: Initiate the FIX session — non-blocking; poll until complete.
         final SessionConfiguration sessionCfg = SessionConfiguration.builder()

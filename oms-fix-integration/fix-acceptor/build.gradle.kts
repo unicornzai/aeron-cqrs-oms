@@ -24,3 +24,16 @@ application {
         "--add-opens=java.base/java.nio=ALL-UNNAMED"
     )
 }
+
+tasks.register<JavaExec>("runDumper") {
+    group       = "application"
+    description = "Run CommandStreamDumper — subscribes to aeron:ipc stream 10"
+    classpath   = sourceSets.main.get().runtimeClasspath
+    mainClass.set("com.oms.fix.acceptor.CommandStreamDumper")
+    jvmArgs = listOf(
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED"
+    )
+}

@@ -1,5 +1,8 @@
 package com.oms.fix.acceptor;
 
+import com.oms.common.OmsStreams;
+import io.aeron.Aeron;
+import io.aeron.Publication;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.driver.MediaDriver;
@@ -64,7 +67,13 @@ public class FixAcceptorMain
         final ArchivingMediaDriver archivingMediaDriver =
             ArchivingMediaDriver.launch(driverCtx, archiveCtx);
 
-        // Step 2: Configure FixEngine — point aeronArchiveContext at the archive we just started.
+        // Step 2: Connect Aeron and open command-ingress publication.
+        // This Aeron.connect() shares the ArchivingMediaDriver started above.
+        final Aeron aeron = Aeron.connect();
+        final Publication commandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        final CommandStreamPublisher publisher = new CommandStreamPublisher(commandPub);
+
+        // Step 3: Configure FixEngine — point aeronArchiveContext at the archive we just started.
         final EngineConfiguration engineCfg = new EngineConfiguration()
             .bindTo("0.0.0.0", FIX_PORT)
             .libraryAeronChannel(LIBRARY_CHANNEL)
@@ -77,11 +86,11 @@ public class FixAcceptorMain
             .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)
             .controlResponseChannel("aeron:udp?endpoint=localhost:0");  // ephemeral response port
 
-        // Step 3: Launch engine (connects to the running ArchivingMediaDriver).
+        // Step 4: Launch engine (connects to the running ArchivingMediaDriver).
         final FixEngine engine = FixEngine.launch(engineCfg);
 
-        // Step 4: Connect FixLibrary (connects to engine via IPC).
-        final FixSessionAcquireHandler acquireHandler = new FixSessionAcquireHandler();
+        // Step 5: Connect FixLibrary (connects to engine via IPC).
+        final FixSessionAcquireHandler acquireHandler = new FixSessionAcquireHandler(publisher);
 
         final LibraryConfiguration libraryCfg = new LibraryConfiguration()
             .sessionAcquireHandler(acquireHandler)
@@ -93,11 +102,13 @@ public class FixAcceptorMain
 
         final FixLibrary library = FixLibrary.connect(libraryCfg);
 
-        // Shutdown: close in reverse order — library → engine → archivingMediaDriver.
+        // Shutdown: close in reverse order — library → Aeron → engine → archivingMediaDriver.
         Runtime.getRuntime().addShutdownHook(new Thread(() ->
         {
             System.out.println("[Acceptor] Shutting down — Artio will send Logout to all sessions.");
             library.close();
+            commandPub.close();
+            aeron.close();
             engine.close();
             archivingMediaDriver.close();
         }));
