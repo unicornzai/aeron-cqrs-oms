@@ -3,10 +3,13 @@ package com.oms.fix.acceptor;
 import com.oms.common.OmsStreams;
 import io.aeron.Aeron;
 import io.aeron.Publication;
+import io.aeron.Subscription;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import org.agrona.concurrent.AgentRunner;
+import org.agrona.concurrent.YieldingIdleStrategy;
 import uk.co.real_logic.artio.engine.EngineConfiguration;
 import uk.co.real_logic.artio.engine.FixEngine;
 import uk.co.real_logic.artio.engine.LowResourceEngineScheduler;
@@ -81,11 +84,25 @@ public class FixAcceptorMain
         final ArchivingMediaDriver archivingMediaDriver =
             ArchivingMediaDriver.launch(driverCtx, archiveCtx);
 
-        // Step 2: Connect Aeron and open command-ingress publication.
+        // Step 2: Connect Aeron, open command-ingress publication, and wire the sequencer.
         // This Aeron.connect() shares the ArchivingMediaDriver started above.
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirAbsolute));
+
+        // Acceptor publishes raw FIX commands here; Sequencer reads from this stream.
         final Publication commandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
         final CommandStreamPublisher publisher = new CommandStreamPublisher(commandPub);
+
+        // M4: Sequencer — reads stream 10 (raw), stamps seq number, republishes to stream 1 (sequenced).
+        // The Subscription must be created before the Publication is first offered to, otherwise
+        // Aeron may not see a connected subscriber. Both live in this process's Aeron instance.
+        final Subscription commandIngressSub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        final Publication  sequencedCommandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+
+        final FixSequencerAgent sequencerAgent = new FixSequencerAgent(commandIngressSub, sequencedCommandPub);
+        // YieldingIdleStrategy: spins briefly then yields — good balance for a low-latency POC.
+        final AgentRunner sequencerRunner = new AgentRunner(
+            new YieldingIdleStrategy(), Throwable::printStackTrace, null, sequencerAgent);
+        AgentRunner.startOnThread(sequencerRunner);
 
         // Step 3: Configure FixEngine — point aeronArchiveContext at the archive we just started.
         final EngineConfiguration engineCfg = new EngineConfiguration()
@@ -122,11 +139,14 @@ public class FixAcceptorMain
 
         final FixLibrary library = FixLibrary.connect(libraryCfg);
 
-        // Shutdown: close in reverse order — library → Aeron → engine → archivingMediaDriver.
+        // Shutdown: close in reverse order — library → sequencer → Aeron → engine → archivingMediaDriver.
         Runtime.getRuntime().addShutdownHook(new Thread(() ->
         {
             System.out.println("[Acceptor] Shutting down — Artio will send Logout to all sessions.");
             library.close();
+            sequencerRunner.close();       // stop sequencer thread before closing its pub/sub
+            commandIngressSub.close();
+            sequencedCommandPub.close();
             commandPub.close();
             aeron.close();
             engine.close();

@@ -11,11 +11,13 @@ import io.aeron.logbuffer.FragmentHandler;
 import java.nio.file.Paths;
 
 /**
- * Throwaway standalone subscriber — no Artio, pure Aeron + SBE.
+ * M4: Standalone verification subscriber — no Artio, pure Aeron + SBE.
  * Connects to the acceptor's ArchivingMediaDriver (./aeron-fix-acceptor),
- * subscribes to IPC stream 10, and prints each NewOrderSingleCommand.
+ * subscribes to IPC stream 1 (Sequenced Command Stream), and prints each
+ * NewOrderSingleCommand including the sequenceNumber stamped by FixSequencerAgent.
  *
- * // TODO(POC): remove or fold into an integration test once M4 Sequencer is wired.
+ * <p>Run after the acceptor is up. Send orders via the FIX client; verify that
+ * sequenceNumbers start at 1 and increment with no gaps.
  */
 public final class CommandStreamDumper
 {
@@ -24,7 +26,9 @@ public final class CommandStreamDumper
         // Must match FixAcceptorMain.AERON_DIR — the acceptor's driver lives there, not in the default dir.
         final String aeronDirAbsolute = Paths.get("./aeron-fix-acceptor").toAbsolutePath().normalize().toString();
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirAbsolute));
-        final Subscription sub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        // M4: subscribe to stream 1 (Sequenced Command Stream) — sequencer stamps sequence numbers here.
+        // Previously stream 10 (raw ingress); changed for M4 to verify sequencer pass-through.
+        final Subscription sub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
 
         final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
         final NewOrderSingleCommandDecoder nosDecoder = new NewOrderSingleCommandDecoder();
@@ -35,10 +39,9 @@ public final class CommandStreamDumper
 
             if (headerDecoder.templateId() != NewOrderSingleCommandDecoder.TEMPLATE_ID)
             {
-                System.out.println("template not NOS: " + headerDecoder.templateId());
+                System.out.println("[Dumper] Unknown templateId=" + headerDecoder.templateId() + " — skipping");
                 return;
             }
-            else { System.out.println("Received unknown template: " + headerDecoder.templateId()); }
 
             nosDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
 
@@ -62,7 +65,8 @@ public final class CommandStreamDumper
             aeron.close();
         }));
 
-        System.out.println("[Dumper] Listening on aeron:ipc stream " + OmsStreams.COMMAND_INGRESS_STREAM + "...");
+        System.out.println("[Dumper] Listening on aeron:ipc stream " + OmsStreams.COMMAND_STREAM +
+            " (Sequenced Command Stream) — verifying sequence numbers...");
         while (!Thread.currentThread().isInterrupted())
         {
             sub.poll(handler, 10);

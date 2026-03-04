@@ -27,7 +27,7 @@ application {
 
 tasks.register<JavaExec>("runDumper") {
     group       = "application"
-    description = "Run CommandStreamDumper — subscribes to aeron:ipc stream 10"
+    description = "Run CommandStreamDumper — subscribes to aeron:ipc stream 1 (Sequenced Command Stream)"
     classpath   = sourceSets.main.get().runtimeClasspath
     mainClass.set("com.oms.fix.acceptor.CommandStreamDumper")
     jvmArgs = listOf(

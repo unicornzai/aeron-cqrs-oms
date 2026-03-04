@@ -116,6 +116,12 @@ public class FixClientMain
             .address(ACCEPTOR_HOST, ACCEPTOR_PORT)
             .senderCompId(SENDER_COMP_ID)
             .targetCompId(TARGET_COMP_ID)
+            // ResetSeqNumFlag (tag 141=Y): tells the acceptor to reset its expected inbound
+            // sequence number on every Logon. Required when the client process restarts and
+            // its log dir is deleted (deleteLogFileDirOnStart=true resets client seqnums to 1,
+            // but the acceptor still remembers the previous session's last seqnum).
+            // TODO(POC): remove if persistent sequence tracking is needed across client restarts.
+            .resetSeqNum(true)
             .build();
 
         System.out.printf("[Client] Initiating FIX session → %s:%d (sender=%s target=%s)%n",
