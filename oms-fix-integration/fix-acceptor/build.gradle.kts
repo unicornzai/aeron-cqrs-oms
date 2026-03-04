@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation(project(":oms-fix-integration:fix-common"))
+    implementation(project(":oms-fix-integration:fix-aggregate-agent"))
     implementation(project(":oms-common"))
     implementation(libs.artio.core)
     implementation(libs.artio.session.codecs)

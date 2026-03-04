@@ -4,5 +4,4 @@ dependencies {
     implementation(libs.aeron.client)
     implementation(libs.agrona)
     implementation(libs.gflog.api)
-    // TODO(M2): add Artio dependency when wiring FIX session
 }

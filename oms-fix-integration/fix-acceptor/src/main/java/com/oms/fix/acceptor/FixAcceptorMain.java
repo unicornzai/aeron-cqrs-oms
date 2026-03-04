@@ -1,6 +1,9 @@
 package com.oms.fix.acceptor;
 
 import com.oms.common.OmsStreams;
+import com.oms.fix.aggregate.FixOrderAggregateAgent;
+import com.oms.fix.sbe.MessageHeaderDecoder;
+import com.oms.fix.sbe.PlaceOrderCommandDecoder;
 import io.aeron.Aeron;
 import io.aeron.Publication;
 import io.aeron.Subscription;
@@ -104,6 +107,23 @@ public class FixAcceptorMain
             new YieldingIdleStrategy(), Throwable::printStackTrace, null, sequencerAgent);
         AgentRunner.startOnThread(sequencerRunner);
 
+        // M5: FixOrderAggregateAgent — subscribes to sequenced commands (stream 1),
+        // translates NewOrderSingleCommand (templateId=10) → PlaceOrderCommand (templateId=20),
+        // and publishes back to stream 10 so the sequencer stamps it and re-delivers on stream 1.
+        final Subscription fixAggCommandSub   = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+        final Publication  internalCommandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+
+        final FixOrderAggregateAgent fixAggAgent = new FixOrderAggregateAgent(fixAggCommandSub, internalCommandPub);
+        final AgentRunner fixAggRunner = new AgentRunner(
+            new YieldingIdleStrategy(), Throwable::printStackTrace, null, fixAggAgent);
+        AgentRunner.startOnThread(fixAggRunner);
+
+        // M5 verification: second subscriber on stream 1 to confirm PlaceOrderCommand appears.
+        // Decoders are only used on the main while-loop thread so no synchronisation needed.
+        final Subscription         verifyPlaceOrderSub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+        final MessageHeaderDecoder verifyHeaderDecoder = new MessageHeaderDecoder();
+        final PlaceOrderCommandDecoder verifyPlaceDecoder = new PlaceOrderCommandDecoder();
+
         // Step 3: Configure FixEngine — point aeronArchiveContext at the archive we just started.
         final EngineConfiguration engineCfg = new EngineConfiguration()
             .bindTo("0.0.0.0", FIX_PORT)
@@ -139,12 +159,16 @@ public class FixAcceptorMain
 
         final FixLibrary library = FixLibrary.connect(libraryCfg);
 
-        // Shutdown: close in reverse order — library → sequencer → Aeron → engine → archivingMediaDriver.
+        // Shutdown: close in reverse order — library → agents → Aeron → engine → archivingMediaDriver.
         Runtime.getRuntime().addShutdownHook(new Thread(() ->
         {
             System.out.println("[Acceptor] Shutting down — Artio will send Logout to all sessions.");
             library.close();
+            fixAggRunner.close();
             sequencerRunner.close();       // stop sequencer thread before closing its pub/sub
+            verifyPlaceOrderSub.close();
+            fixAggCommandSub.close();
+            internalCommandPub.close();
             commandIngressSub.close();
             sequencedCommandPub.close();
             commandPub.close();
@@ -158,6 +182,21 @@ public class FixAcceptorMain
         while (!Thread.currentThread().isInterrupted())
         {
             library.poll(10);
+
+            // M5 verification: log any PlaceOrderCommand that appears on stream 1.
+            verifyPlaceOrderSub.poll((buf, off, len, hdr) ->
+            {
+                verifyHeaderDecoder.wrap(buf, off);
+                if (verifyHeaderDecoder.templateId() == PlaceOrderCommandDecoder.TEMPLATE_ID)
+                {
+                    verifyPlaceDecoder.wrapAndApplyHeader(buf, off, verifyHeaderDecoder);
+                    System.out.printf("[M5-Verify] PlaceOrderCommand orderId=%d symbol=%s side=%s seq=%d%n",
+                        verifyPlaceDecoder.orderId(),
+                        verifyPlaceDecoder.symbol(),
+                        verifyPlaceDecoder.side(),
+                        verifyPlaceDecoder.sequenceNumber());
+                }
+            }, 10);
         }
     }
 }

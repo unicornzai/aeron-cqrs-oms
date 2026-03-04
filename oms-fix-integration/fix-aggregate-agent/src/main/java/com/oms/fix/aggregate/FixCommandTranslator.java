@@ -1,0 +1,75 @@
+package com.oms.fix.aggregate;
+
+import com.oms.fix.sbe.MessageHeaderEncoder;
+import com.oms.fix.sbe.NewOrderSingleCommandDecoder;
+import com.oms.fix.sbe.PlaceOrderCommandEncoder;
+import org.agrona.concurrent.UnsafeBuffer;
+
+/**
+ * Stateful translator: FIX-layer {@code NewOrderSingleCommand} (templateId=10)
+ * → domain {@code PlaceOrderCommand} (templateId=20).
+ *
+ * <p>All encoders are pre-allocated and reused — zero allocation on the hot path.
+ * The output is written into the caller-supplied {@link UnsafeBuffer} starting at
+ * offset 0; the returned {@code int} is the total encoded byte length to offer.
+ *
+ * <p>The {@code sequenceNumber} field is set to 0 in every emitted message;
+ * {@link com.oms.fix.acceptor.FixSequencerAgent} overwrites it when the message
+ * re-enters stream 10 and is re-published to stream 1.
+ */
+public final class FixCommandTranslator
+{
+    private final MessageHeaderEncoder  headerEncoder = new MessageHeaderEncoder();
+    private final PlaceOrderCommandEncoder cmdEncoder  = new PlaceOrderCommandEncoder();
+
+    // orderId counter — starts at 1001 to avoid collision with OmsApp's pre-seeded orders.
+    // TODO(POC): use a shared atomic counter or coordinate with OmsApp in production.
+    private long nextOrderId = 1001L;
+
+    /**
+     * Returns the next internal orderId and advances the counter.
+     * Call this once per new order; pass the result to {@link #translate}.
+     */
+    public long nextOrderId()
+    {
+        return nextOrderId++;
+    }
+
+    /**
+     * Encodes a {@link PlaceOrderCommand} into {@code outBuf} at offset 0.
+     *
+     * <p>Copies {@code symbol}, {@code side}, {@code ordType}, {@code price},
+     * and {@code orderQty} from the decoded NOS. Does NOT copy FIX-specific
+     * fields ({@code clOrdId}, {@code sessionId}, {@code account}).
+     *
+     * @param nos     fully-decoded NOS source (buffer still valid)
+     * @param outBuf  pre-allocated output buffer (must be large enough for header + block)
+     * @param orderId internal orderId allocated by the caller via {@link #nextOrderId()}
+     * @return total encoded length (header + block), suitable for {@code Publication.offer()}
+     */
+    public int translate(final NewOrderSingleCommandDecoder nos,
+                         final UnsafeBuffer outBuf,
+                         final long orderId)
+    {
+        cmdEncoder.wrapAndApplyHeader(outBuf, 0, headerEncoder);
+
+        cmdEncoder
+            .sequenceNumber(0L)               // stamped by FixSequencerAgent
+            .orderId(orderId)
+            .symbol(nos.symbol())             // String copy — POC acceptable
+            .side(nos.side())
+            .ordType(nos.ordType());
+
+        // Pass Decimal64 mantissa+exponent through unchanged — no re-scaling needed
+        // because FixSessionHandler already encodes price/qty with exponent=-scale().
+        cmdEncoder.price()
+            .mantissa(nos.price().mantissa())
+            .exponent(nos.price().exponent());
+
+        cmdEncoder.orderQty()
+            .mantissa(nos.orderQty().mantissa())
+            .exponent(nos.orderQty().exponent());
+
+        return MessageHeaderEncoder.ENCODED_LENGTH + PlaceOrderCommandEncoder.BLOCK_LENGTH;
+    }
+}
