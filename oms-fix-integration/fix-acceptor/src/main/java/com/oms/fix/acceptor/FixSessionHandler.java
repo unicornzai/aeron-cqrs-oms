@@ -56,6 +56,11 @@ public final class FixSessionHandler implements SessionHandler
         final long position,
         final OnMessageInfo messageInfo)
     {
+        // DIAGNOSTIC: log every inbound application message before filtering.
+        // TODO(POC): remove after M3 pipeline is confirmed working.
+        System.out.printf("[FixSession] onMessage: msgType=%d (nosType=%d) len=%d%n",
+            messageType, NewOrderSingleDecoder.MESSAGE_TYPE, length);
+
         if (messageType != NewOrderSingleDecoder.MESSAGE_TYPE)
         {
             return Action.CONTINUE;

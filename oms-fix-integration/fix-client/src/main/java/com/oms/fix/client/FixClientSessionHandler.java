@@ -85,6 +85,7 @@ public class FixClientSessionHandler implements SessionAcquireHandler
             // Build a hardcoded NOS: AAPL BUY 100 @ 185.50 LIMIT
             nos.reset();
             nos.clOrdID("FIX-NOS-001");
+//            nos.handlInst('3');                             // FIX 4.4 tag 21: '3'=Manual, required field
             nos.instrument().symbol("AAPL");
             nos.side('1');                              // FIX 4.4 tag 54: '1'=BUY
             nos.ordType('2');                           // FIX 4.4 tag 40: '2'=LIMIT

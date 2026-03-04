@@ -29,7 +29,7 @@ import java.util.Collections;
  *   <li>Connect a {@link FixLibrary} on the same IPC channel.
  * </ol>
  *
- * <p>Run before {@link FixClientMain}. Press Ctrl-C for a clean Logout.
+ * <p>Run before FixClientMain. Press Ctrl-C for a clean Logout.
  *
  * // TODO(POC): When integrating with OmsApp, share the single ArchivingMediaDriver
  * //            and coordinate archive channel ports (acceptor: 8030, OmsApp: 8010).
@@ -110,9 +110,14 @@ public class FixAcceptorMain
         final LibraryConfiguration libraryCfg = new LibraryConfiguration()
             .sessionAcquireHandler(acquireHandler)
             .sessionExistsHandler(
-                (library, surrogateId, localCompId, localSubId, localLocationId,
+                (lib, surrogateId, localCompId, localSubId, localLocationId,
                  remoteCompId, remoteSubId, remoteLocationId, logonSeqNum, seqIndex) ->
-                    System.out.printf("[Acceptor] Existing session: remote=%s%n", remoteCompId))
+                {
+                    System.out.printf("[Acceptor] Existing session: remote=%s — requesting acquisition%n", remoteCompId);
+                    // Artio does NOT auto-dispatch existing sessions to sessionAcquireHandler;
+                    // we must explicitly request ownership so onSessionAcquired fires.
+                    lib.requestSession(surrogateId, -1, seqIndex, 5_000L);
+                })
             .libraryAeronChannels(Collections.singletonList(LIBRARY_CHANNEL));
 
         final FixLibrary library = FixLibrary.connect(libraryCfg);

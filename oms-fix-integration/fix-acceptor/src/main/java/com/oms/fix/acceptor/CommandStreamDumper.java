@@ -8,9 +8,11 @@ import io.aeron.Aeron;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 
+import java.nio.file.Paths;
+
 /**
  * Throwaway standalone subscriber — no Artio, pure Aeron + SBE.
- * Connects to the running ArchivingMediaDriver (default Aeron dir),
+ * Connects to the acceptor's ArchivingMediaDriver (./aeron-fix-acceptor),
  * subscribes to IPC stream 10, and prints each NewOrderSingleCommand.
  *
  * // TODO(POC): remove or fold into an integration test once M4 Sequencer is wired.
@@ -19,7 +21,9 @@ public final class CommandStreamDumper
 {
     public static void main(final String[] args) throws Exception
     {
-        final Aeron aeron = Aeron.connect();
+        // Must match FixAcceptorMain.AERON_DIR — the acceptor's driver lives there, not in the default dir.
+        final String aeronDirAbsolute = Paths.get("./aeron-fix-acceptor").toAbsolutePath().normalize().toString();
+        final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirAbsolute));
         final Subscription sub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
 
         final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -31,8 +35,10 @@ public final class CommandStreamDumper
 
             if (headerDecoder.templateId() != NewOrderSingleCommandDecoder.TEMPLATE_ID)
             {
+                System.out.println("template not NOS: " + headerDecoder.templateId());
                 return;
             }
+            else { System.out.println("Received unknown template: " + headerDecoder.templateId()); }
 
             nosDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
 
