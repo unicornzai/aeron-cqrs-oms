@@ -14,6 +14,7 @@ import uk.co.real_logic.artio.library.FixLibrary;
 import uk.co.real_logic.artio.library.LibraryConfiguration;
 
 import java.io.File;
+import java.nio.file.Paths;
 import java.util.Collections;
 
 /**
@@ -31,7 +32,7 @@ import java.util.Collections;
  * <p>Run before {@link FixClientMain}. Press Ctrl-C for a clean Logout.
  *
  * // TODO(POC): When integrating with OmsApp, share the single ArchivingMediaDriver
- * //            and coordinate archive channel ports (8010) with the OMS archive (8010).
+ * //            and coordinate archive channel ports (acceptor: 8030, OmsApp: 8010).
  * //            Two archives on the same port will conflict.
  */
 public class FixAcceptorMain
@@ -41,19 +42,31 @@ public class FixAcceptorMain
     static final int FIX_PORT = 9880;
     private static final String LOG_DIR = "./fix-acceptor-logs";
     private static final String ARCHIVE_DIR = "./fix-acceptor-archive";
+    // Dedicated Aeron dir — prevents acceptor dirDeleteOnStart from wiping the client's live dir.
+    private static final String AERON_DIR = "./aeron-fix-acceptor";
 
-    // Artio's internal archive — acceptor uses port 8010.
-    // Client uses 8020 so the two processes don't conflict on the same machine.
-    private static final String ARCHIVE_CONTROL_CHANNEL  = "aeron:udp?endpoint=localhost:8010";
+    // Fixed UDP ports for archive control — avoids stream-ID collision between IPC archive
+    // control (default stream 10) and commandPub (OmsStreams.COMMAND_INGRESS_STREAM = 10).
+    // Response on a fixed port (8031) prevents the ephemeral-port hang seen with :0.
+    // Does not conflict with OmsApp's archive (8010) or the FIX client's archive (8020).
+    private static final String ARCHIVE_CONTROL_CHANNEL     = "aeron:udp?endpoint=localhost:8030";
+    private static final String ARCHIVE_RESPONSE_CHANNEL    = "aeron:udp?endpoint=localhost:8031";
     private static final String ARCHIVE_REPLICATION_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     public static void main(final String[] args) throws Exception
     {
+        // Resolve the Aeron dir to a canonical absolute path ONCE so that all components
+        // (driver, archive, engine) use identical string paths and share the same CnC file.
+        final String aeronDirAbsolute = Paths.get(AERON_DIR).toAbsolutePath().normalize().toString();
+        // Force Artio's internal Aeron.connect() calls to use this same dir.
+        System.setProperty("aeron.dir", aeronDirAbsolute);
+
         // Step 1: Launch ArchivingMediaDriver.
         // Artio's FixEngine calls Aeron.connect() — it does NOT start its own driver.
         // The archive is required for Artio's internal message replay (resend requests).
         // ThreadingMode.SHARED runs sender/receiver/conductor on a single thread — POC only.
         final MediaDriver.Context driverCtx = new MediaDriver.Context()
+            .aeronDirectoryName(aeronDirAbsolute)
             .dirDeleteOnStart(true)
             .threadingMode(ThreadingMode.SHARED);
 
@@ -62,14 +75,15 @@ public class FixAcceptorMain
             .deleteArchiveOnStart(true)
             .controlChannel(ARCHIVE_CONTROL_CHANNEL)
             .replicationChannel(ARCHIVE_REPLICATION_CHANNEL)
-            .recordingEventsEnabled(false);  // no need to broadcast recording events in POC
+            .recordingEventsEnabled(false)
+            .aeronDirectoryName(aeronDirAbsolute);  // match the driver dir explicitly
 
         final ArchivingMediaDriver archivingMediaDriver =
             ArchivingMediaDriver.launch(driverCtx, archiveCtx);
 
         // Step 2: Connect Aeron and open command-ingress publication.
         // This Aeron.connect() shares the ArchivingMediaDriver started above.
-        final Aeron aeron = Aeron.connect();
+        final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirAbsolute));
         final Publication commandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
         final CommandStreamPublisher publisher = new CommandStreamPublisher(commandPub);
 
@@ -83,8 +97,9 @@ public class FixAcceptorMain
             .scheduler(new LowResourceEngineScheduler());
 
         engineCfg.aeronArchiveContext()
-            .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)
-            .controlResponseChannel("aeron:udp?endpoint=localhost:0");  // ephemeral response port
+            .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)   // UDP 8030
+            .controlResponseChannel(ARCHIVE_RESPONSE_CHANNEL) // UDP 8031 — fixed port, not ephemeral
+            .aeronDirectoryName(aeronDirAbsolute);
 
         // Step 4: Launch engine (connects to the running ArchivingMediaDriver).
         final FixEngine engine = FixEngine.launch(engineCfg);

@@ -39,8 +39,11 @@ public class FixClientMain
     // Dedicated Aeron dir — prevents client dirDeleteOnStart from wiping the acceptor's live dir.
     private static final String AERON_DIR       = "./aeron-fix-client";
 
-    // Client archive on port 8020 — distinct from acceptor's 8010.
+    // Fixed UDP ports for archive control — avoids any IPC stream-ID collision.
+    // Response on a fixed port (8021) prevents the ephemeral-port hang seen with :0.
+    // Does not conflict with OmsApp's archive (8010) or the FIX acceptor's archive (8030).
     private static final String ARCHIVE_CONTROL_CHANNEL     = "aeron:udp?endpoint=localhost:8020";
+    private static final String ARCHIVE_RESPONSE_CHANNEL    = "aeron:udp?endpoint=localhost:8021";
     private static final String ARCHIVE_REPLICATION_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     static final String SENDER_COMP_ID = "CLIENT";
@@ -79,8 +82,9 @@ public class FixClientMain
             .scheduler(new LowResourceEngineScheduler());
 
         engineCfg.aeronArchiveContext()
-            .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)
-            .controlResponseChannel("aeron:udp?endpoint=localhost:0");
+            .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)   // UDP 8020
+            .controlResponseChannel(ARCHIVE_RESPONSE_CHANNEL) // UDP 8021 — fixed port, not ephemeral
+            .aeronDirectoryName(aeronDirAbsolute);
 
         // Step 3: Launch engine then library.
         final FixEngine engine = FixEngine.launch(engineCfg);

@@ -44,4 +44,5 @@ replay_pid*
 **/fix-acceptor-archive
 **/fix-acceptor-logs
 aeron-fix-client
+aeron-fix-acceptor
 
