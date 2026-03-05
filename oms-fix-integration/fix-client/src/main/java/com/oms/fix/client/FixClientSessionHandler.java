@@ -24,8 +24,8 @@ public class FixClientSessionHandler implements SessionAcquireHandler
     public SessionHandler onSessionAcquired(final Session session, final SessionAcquiredInfo acquiredInfo)
     {
         final CompositeKey key = session.compositeKey();
-        System.err.println(String.format("[Client] Session acquired: id=%d local=%s remote=%s",
-            session.id(), key.localCompId(), key.remoteCompId()));
+        System.out.printf("[Client] Session acquired: id=%d local=%s remote=%s%n",
+                session.id(), key.localCompId(), key.remoteCompId());
         return new LoggingSessionHandler();
     }
 
@@ -37,16 +37,16 @@ public class FixClientSessionHandler implements SessionAcquireHandler
 
         @Override
         public Action onMessage(
-            final DirectBuffer buffer,
-            final int offset,
-            final int length,
-            final int libraryId,
-            final Session session,
-            final int sequenceIndex,
-            final long messageType,
-            final long timestampInNs,
-            final long position,
-            final OnMessageInfo messageInfo)
+                final DirectBuffer buffer,
+                final int offset,
+                final int length,
+                final int libraryId,
+                final Session session,
+                final int sequenceIndex,
+                final long messageType,
+                final long timestampInNs,
+                final long position,
+                final OnMessageInfo messageInfo)
         {
             // M3: no inbound application messages expected (acceptor sends none).
             // M7+: check messageType == ExecutionReport message type and decode.
@@ -56,22 +56,22 @@ public class FixClientSessionHandler implements SessionAcquireHandler
         @Override
         public void onTimeout(final int libraryId, final Session session)
         {
-            System.err.println(String.format("[Client] Session timeout: libraryId=%d sessionId=%d",
-                libraryId, session.id()));
+            System.out.printf("[Client] Session timeout: libraryId=%d sessionId=%d%n",
+                    libraryId, session.id());
         }
 
         @Override
         public void onSlowStatus(final int libraryId, final Session session, final boolean hasBecomeSlow)
         {
-            System.err.println(String.format("[Client] Slow-consumer: hasBecomeSlow=%b sessionId=%d",
-                hasBecomeSlow, session.id()));
+            System.out.printf("[Client] Slow-consumer: hasBecomeSlow=%b sessionId=%d%n",
+                    hasBecomeSlow, session.id());
         }
 
         @Override
         public Action onDisconnect(final int libraryId, final Session session, final DisconnectReason reason)
         {
-            System.err.println(String.format("[Client] Disconnected: sessionId=%d reason=%s",
-                session.id(), reason));
+            System.out.printf("[Client] Disconnected: sessionId=%d reason=%s%n",
+                    session.id(), reason);
             return Action.CONTINUE;
         }
 
@@ -79,8 +79,8 @@ public class FixClientSessionHandler implements SessionAcquireHandler
         public void onSessionStart(final Session session)
         {
             final CompositeKey key = session.compositeKey();
-            System.err.println(String.format("[Client] Logon complete: local=%s remote=%s",
-                key.localCompId(), key.remoteCompId()));
+            System.out.printf("[Client] Logon complete: local=%s remote=%s%n",
+                    key.localCompId(), key.remoteCompId());
 
             // Build a hardcoded NOS: AAPL BUY 100 @ 185.50 LIMIT
             nos.reset();
@@ -97,7 +97,7 @@ public class FixClientSessionHandler implements SessionAcquireHandler
             nos.transactTime(tsEncoder.buffer(), 0, tsLen);
 
             final long result = session.trySend(nos);
-            System.err.println(String.format("[Client] Sent NOS FIX-NOS-001: trySend result=%d", result));
+            System.out.printf("[Client] Sent NOS FIX-NOS-001: trySend result=%d%n", result);
         }
     }
 }
