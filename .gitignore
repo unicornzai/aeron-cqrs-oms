@@ -45,4 +45,4 @@ replay_pid*
 **/fix-acceptor-logs
 aeron-fix-client
 aeron-fix-acceptor
-
+**/oms-archive

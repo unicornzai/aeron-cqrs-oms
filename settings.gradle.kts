@@ -11,6 +11,7 @@ include(
     "oms-read-model:oms-read-model-viewserver",
     "oms-api",
     "oms-app",
+    "oms-media-driver",
     "oms-fix-integration:fix-common",
     "oms-fix-integration:fix-acceptor",
     "oms-fix-integration:fix-aggregate-agent",
