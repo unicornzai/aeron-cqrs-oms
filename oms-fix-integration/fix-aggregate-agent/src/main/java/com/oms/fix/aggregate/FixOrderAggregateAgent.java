@@ -7,12 +7,12 @@ import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
-import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.collections.Object2LongHashMap;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.UnsafeBuffer;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * M5: Anti-corruption layer between the FIX acceptor and the core OMS domain.
@@ -41,13 +41,9 @@ public final class FixOrderAggregateAgent implements Agent
     private final Object2LongHashMap<String> orderIdByClOrdId =
         new Object2LongHashMap<>(-1L);
 
-    // orderId → FIX-layer state (for future ExecReport correlation in M7)
-    private final Long2ObjectHashMap<FixOrderState> fixStateByOrderId =
-        new Long2ObjectHashMap<>();
-
-    // orderId → clOrdId (reverse lookup for ExecReport in M7)
-    private final Long2ObjectHashMap<String> clOrdIdByOrderId =
-        new Long2ObjectHashMap<>();
+    // orderId → FIX-layer state; shared with FixExecReportBridge for ExecReport correlation.
+    // ConcurrentHashMap: agent thread writes, bridge reads on the Artio poll thread.
+    private final ConcurrentHashMap<Long, FixOrderState> fixStateByOrderId;
 
     private final FixCommandTranslator translator = new FixCommandTranslator();
 
@@ -62,8 +58,16 @@ public final class FixOrderAggregateAgent implements Agent
     public FixOrderAggregateAgent(final Subscription commandStreamSub,
                                   final Publication  internalCommandPub)
     {
+        this(commandStreamSub, internalCommandPub, new ConcurrentHashMap<>());
+    }
+
+    public FixOrderAggregateAgent(final Subscription commandStreamSub,
+                                  final Publication  internalCommandPub,
+                                  final ConcurrentHashMap<Long, FixOrderState> sharedFixStateMap)
+    {
         this.commandStreamSub   = commandStreamSub;
         this.internalCommandPub = internalCommandPub;
+        this.fixStateByOrderId  = sharedFixStateMap;
     }
 
     @Override
@@ -127,7 +131,6 @@ public final class FixOrderAggregateAgent implements Agent
         final long orderId = translator.nextOrderId();
 
         orderIdByClOrdId.put(clOrdId, orderId);
-        clOrdIdByOrderId.put(orderId, clOrdId);
         fixStateByOrderId.put(orderId, new FixOrderState(clOrdId, nos.sessionId(), FixOrdStatus.PENDING_NEW));
 
         System.out.printf("[FixAggAgent] clOrdId=%s → orderId=%d %s%n",

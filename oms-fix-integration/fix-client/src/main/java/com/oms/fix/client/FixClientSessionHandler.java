@@ -3,6 +3,7 @@ package com.oms.fix.client;
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import org.agrona.DirectBuffer;
 import uk.co.real_logic.artio.builder.NewOrderSingleEncoder;
+import uk.co.real_logic.artio.decoder.ExecutionReportDecoder;
 import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
 import uk.co.real_logic.artio.library.OnMessageInfo;
 import uk.co.real_logic.artio.library.SessionAcquireHandler;
@@ -11,6 +12,7 @@ import uk.co.real_logic.artio.library.SessionHandler;
 import uk.co.real_logic.artio.messages.DisconnectReason;
 import uk.co.real_logic.artio.session.CompositeKey;
 import uk.co.real_logic.artio.session.Session;
+import uk.co.real_logic.artio.util.MutableAsciiBuffer;
 
 /**
  * M3: sends one hardcoded NewOrderSingle immediately on Logon.
@@ -31,9 +33,11 @@ public class FixClientSessionHandler implements SessionAcquireHandler
 
     private static final class LoggingSessionHandler implements SessionHandler
     {
-        // Reuse encoder and timestamp encoder — single-threaded library polling.
+        // Reuse encoders/decoders — single-threaded library polling.
         private final NewOrderSingleEncoder nos = new NewOrderSingleEncoder();
         private final UtcTimestampEncoder tsEncoder = new UtcTimestampEncoder();
+        private final ExecutionReportDecoder execReportDecoder = new ExecutionReportDecoder();
+        private final MutableAsciiBuffer asciiWrapper = new MutableAsciiBuffer();
 
         @Override
         public Action onMessage(
@@ -48,8 +52,17 @@ public class FixClientSessionHandler implements SessionAcquireHandler
                 final long position,
                 final OnMessageInfo messageInfo)
         {
-            // M3: no inbound application messages expected (acceptor sends none).
-            // M7+: check messageType == ExecutionReport message type and decode.
+            if (messageType == ExecutionReportDecoder.MESSAGE_TYPE)
+            {
+                asciiWrapper.wrap(buffer, offset, length);
+                execReportDecoder.decode(asciiWrapper, 0, length);
+                System.out.printf("[FIX-Client] ExecReport: orderID=%s execType=%c ordStatus=%c symbol=%s side=%c%n",
+                    execReportDecoder.orderIDAsString(),
+                    execReportDecoder.execType(),
+                    execReportDecoder.ordStatus(),
+                    execReportDecoder.symbolAsString(),
+                    execReportDecoder.side());
+            }
             return Action.CONTINUE;
         }
 

@@ -14,6 +14,7 @@ import uk.co.real_logic.artio.session.Session;
 import uk.co.real_logic.artio.util.MutableAsciiBuffer;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * M3: Full SessionHandler — decodes Artio FIX NewOrderSingle → SBE-encodes NewOrderSingleCommand
@@ -26,6 +27,7 @@ public final class FixSessionHandler implements SessionHandler
         MessageHeaderEncoder.ENCODED_LENGTH + NewOrderSingleCommandEncoder.BLOCK_LENGTH;
 
     private final CommandStreamPublisher publisher;
+    private final ConcurrentHashMap<Long, Session> activeSessions;
 
     // Artio decoder — reuse per-instance (single-threaded Artio library polling)
     private final NewOrderSingleDecoder nosDecoder = new NewOrderSingleDecoder();
@@ -38,9 +40,11 @@ public final class FixSessionHandler implements SessionHandler
     private final UnsafeBuffer sendBuffer =
         new UnsafeBuffer(ByteBuffer.allocateDirect(SBE_ENCODED_LENGTH));
 
-    public FixSessionHandler(final CommandStreamPublisher publisher)
+    public FixSessionHandler(final CommandStreamPublisher publisher,
+                             final ConcurrentHashMap<Long, Session> activeSessions)
     {
-        this.publisher = publisher;
+        this.publisher       = publisher;
+        this.activeSessions  = activeSessions;
     }
 
     @Override
@@ -123,18 +127,19 @@ public final class FixSessionHandler implements SessionHandler
     }
 
     @Override
-    public Action onDisconnect(final int libraryId, final Session session, final DisconnectReason reason)
-    {
-        System.out.printf("[Acceptor] Disconnected: sessionId=%d reason=%s%n",
-            session.id(), reason);
-        return Action.CONTINUE;
-    }
-
-    @Override
     public void onSessionStart(final Session session)
     {
         final CompositeKey key = session.compositeKey();
-        System.out.printf("[Acceptor] Logon complete: local=%s remote=%s%n",
-            key.localCompId(), key.remoteCompId());
+        System.out.printf("[Acceptor] Logon complete: local=%s remote=%s sessionId=%d%n",
+            key.localCompId(), key.remoteCompId(), session.id());
+    }
+
+    @Override
+    public Action onDisconnect(final int libraryId, final Session session, final DisconnectReason reason)
+    {
+        activeSessions.remove(session.id());
+        System.out.printf("[Acceptor] Disconnected: sessionId=%d reason=%s (removed from activeSessions)%n",
+            session.id(), reason);
+        return Action.CONTINUE;
     }
 }

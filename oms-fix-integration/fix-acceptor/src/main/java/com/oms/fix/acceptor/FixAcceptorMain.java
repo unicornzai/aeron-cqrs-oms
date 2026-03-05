@@ -2,6 +2,7 @@ package com.oms.fix.acceptor;
 
 import com.oms.common.OmsStreams;
 import com.oms.fix.aggregate.FixOrderAggregateAgent;
+import com.oms.fix.aggregate.FixOrderState;
 import com.oms.fix.sbe.MessageHeaderDecoder;
 import com.oms.fix.sbe.PlaceOrderCommandDecoder;
 import io.aeron.Aeron;
@@ -18,10 +19,12 @@ import uk.co.real_logic.artio.engine.FixEngine;
 import uk.co.real_logic.artio.engine.LowResourceEngineScheduler;
 import uk.co.real_logic.artio.library.FixLibrary;
 import uk.co.real_logic.artio.library.LibraryConfiguration;
+import uk.co.real_logic.artio.session.Session;
 
 import java.io.File;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * FIX acceptor — listens on TCP port 9880 and bridges FIX orders into the OMS.
@@ -118,10 +121,24 @@ public class FixAcceptorMain
         final Subscription fixAggCommandSub   = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
         final Publication  internalCommandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
 
-        final FixOrderAggregateAgent fixAggAgent = new FixOrderAggregateAgent(fixAggCommandSub, internalCommandPub);
+        // ── Shared correlation maps ────────────────────────────────────────────
+        // fixStateByOrderId: written by FixOrderAggregateAgent (agent thread),
+        //                    read by FixExecReportBridge (Artio poll thread).
+        // activeSessions:    written+read by FixSessionHandler and FixExecReportBridge
+        //                    (both on Artio poll thread — ConcurrentHashMap for visibility).
+        final ConcurrentHashMap<Long, FixOrderState> fixStateByOrderId = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Long, Session>       activeSessions    = new ConcurrentHashMap<>();
+
+        final FixOrderAggregateAgent fixAggAgent = new FixOrderAggregateAgent(
+            fixAggCommandSub, internalCommandPub, fixStateByOrderId);
         final AgentRunner fixAggRunner = new AgentRunner(
             new YieldingIdleStrategy(), Throwable::printStackTrace, null, fixAggAgent);
         AgentRunner.startOnThread(fixAggRunner);
+
+        // Subscribe to EVENT_STREAM(2) for FixExecReportBridge — polled on the main loop thread
+        // (same thread as fixLibrary.poll()) to keep Artio session.trySend() single-threaded.
+        final Subscription eventStreamSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.EVENT_STREAM);
+        final FixExecReportBridge execReportBridge = new FixExecReportBridge(fixStateByOrderId, activeSessions);
 
         // M7 verification — two independent check points on the shared OMS streams.
         final Subscription         verifyPlaceOrderSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
@@ -152,7 +169,7 @@ public class FixAcceptorMain
         final FixEngine engine = FixEngine.launch(engineCfg);
 
         // ── Step 5: Connect FixLibrary ────────────────────────────────────────
-        final FixSessionAcquireHandler acquireHandler = new FixSessionAcquireHandler(publisher);
+        final FixSessionAcquireHandler acquireHandler = new FixSessionAcquireHandler(publisher, activeSessions);
 
         final LibraryConfiguration libraryCfg = new LibraryConfiguration()
             .sessionAcquireHandler(acquireHandler)
@@ -181,6 +198,7 @@ public class FixAcceptorMain
                     "ensure OmsMediaDriverMain and OmsApp are both running before starting the acceptor.");
                 library.close();
                 fixAggRunner.close();
+                eventStreamSub.close();
                 verifyPlaceOrderSub.close();
                 verifyEventSub.close();
                 fixAggCommandSub.close();
@@ -202,6 +220,7 @@ public class FixAcceptorMain
             System.out.println("[Acceptor] Shutting down — Artio will send Logout to all sessions.");
             library.close();
             fixAggRunner.close();
+            eventStreamSub.close();
             verifyPlaceOrderSub.close();
             verifyEventSub.close();
             fixAggCommandSub.close();
@@ -217,6 +236,10 @@ public class FixAcceptorMain
         while (!Thread.currentThread().isInterrupted())
         {
             library.poll(10);
+
+            // M7: poll EVENT_STREAM for OrderAccepted/OrderRejected → send FIX ExecutionReport.
+            // Polled on this thread (same as library.poll) so session.trySend() is thread-safe.
+            eventStreamSub.poll(execReportBridge, 10);
 
             // Verify 1: PlaceOrderCommand on COMMAND_STREAM(1) — confirms FIX→domain translation.
             verifyPlaceOrderSub.poll((buf, off, len, hdr) ->
