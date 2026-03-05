@@ -2,9 +2,10 @@ package com.oms.fix.client;
 
 import io.aeron.logbuffer.ControlledFragmentHandler.Action;
 import org.agrona.DirectBuffer;
-import uk.co.real_logic.artio.builder.NewOrderSingleEncoder;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.stereotype.Component;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import uk.co.real_logic.artio.decoder.ExecutionReportDecoder;
-import uk.co.real_logic.artio.fields.UtcTimestampEncoder;
 import uk.co.real_logic.artio.library.OnMessageInfo;
 import uk.co.real_logic.artio.library.SessionAcquireHandler;
 import uk.co.real_logic.artio.library.SessionAcquiredInfo;
@@ -14,30 +15,67 @@ import uk.co.real_logic.artio.session.CompositeKey;
 import uk.co.real_logic.artio.session.Session;
 import uk.co.real_logic.artio.util.MutableAsciiBuffer;
 
+import java.util.Map;
+
 /**
- * M3: sends one hardcoded NewOrderSingle immediately on Logon.
+ * M9: Spring-managed {@link SessionAcquireHandler} for the FIX initiator.
  *
- * <p>M7+: {@code onMessage()} will parse ExecutionReport (35=8) messages and dispatch
- * them to the SSE emitter map keyed by {@code clOrdId}.
+ * <p>Dispatches incoming {@code ExecutionReport (35=8)} messages to the SSE emitter
+ * keyed by {@code clOrdId} (reflected back as FIX {@code orderID} by {@code FixExecReportBridge}).
+ *
+ * <p>{@link FixInitiatorService} is injected {@code @Lazy} to break the mutual
+ * dependency: this bean is constructed first (FixInitiatorService needs it),
+ * so the service's proxy is provided at construction time and resolved on first use.
  */
+@Component
 public class FixClientSessionHandler implements SessionAcquireHandler
 {
+    private final EmitterRegistry      emitterRegistry;
+    private final FixInitiatorService  initiatorService;
+
+    public FixClientSessionHandler(final EmitterRegistry emitterRegistry,
+                                   @Lazy final FixInitiatorService initiatorService)
+    {
+        this.emitterRegistry  = emitterRegistry;
+        this.initiatorService = initiatorService;
+    }
+
     @Override
     public SessionHandler onSessionAcquired(final Session session, final SessionAcquiredInfo acquiredInfo)
     {
         final CompositeKey key = session.compositeKey();
         System.out.printf("[Client] Session acquired: id=%d local=%s remote=%s%n",
-                session.id(), key.localCompId(), key.remoteCompId());
-        return new LoggingSessionHandler();
+            session.id(), key.localCompId(), key.remoteCompId());
+        return new LoggingSessionHandler(emitterRegistry, initiatorService);
     }
+
+    // ── Inner session handler ────────────────────────────────────────────────
 
     private static final class LoggingSessionHandler implements SessionHandler
     {
-        // Reuse encoders/decoders — single-threaded library polling.
-        private final NewOrderSingleEncoder nos = new NewOrderSingleEncoder();
-        private final UtcTimestampEncoder tsEncoder = new UtcTimestampEncoder();
+        private final EmitterRegistry     emitterRegistry;
+        private final FixInitiatorService initiatorService;
+
+        // Pre-allocated — used only on the library poll thread (single-threaded).
         private final ExecutionReportDecoder execReportDecoder = new ExecutionReportDecoder();
-        private final MutableAsciiBuffer asciiWrapper = new MutableAsciiBuffer();
+        private final MutableAsciiBuffer     asciiWrapper      = new MutableAsciiBuffer();
+
+        LoggingSessionHandler(final EmitterRegistry emitterRegistry,
+                              final FixInitiatorService initiatorService)
+        {
+            this.emitterRegistry  = emitterRegistry;
+            this.initiatorService = initiatorService;
+        }
+
+        @Override
+        public void onSessionStart(final Session session)
+        {
+            final CompositeKey key = session.compositeKey();
+            System.out.printf("[Client] Logon complete: local=%s remote=%s%n",
+                key.localCompId(), key.remoteCompId());
+            // Notify the service that the session is active so it can drain the send queue.
+            initiatorService.onSessionReady(session);
+        }
 
         @Override
         public Action onMessage(
@@ -56,12 +94,36 @@ public class FixClientSessionHandler implements SessionAcquireHandler
             {
                 asciiWrapper.wrap(buffer, offset, length);
                 execReportDecoder.decode(asciiWrapper, 0, length);
-                System.out.printf("[FIX-Client] ExecReport: orderID=%s execType=%c ordStatus=%c symbol=%s side=%c%n",
-                    execReportDecoder.orderIDAsString(),
+
+                final String clOrdId = execReportDecoder.orderIDAsString();
+                System.out.printf("[FIX-Client] ExecReport: clOrdId=%s execType=%c ordStatus=%c symbol=%s side=%c%n",
+                    clOrdId,
                     execReportDecoder.execType(),
                     execReportDecoder.ordStatus(),
                     execReportDecoder.symbolAsString(),
                     execReportDecoder.side());
+
+                final SseEmitter emitter = emitterRegistry.get(clOrdId);
+                if (emitter != null)
+                {
+                    try
+                    {
+                        emitter.send(SseEmitter.event()
+                            .name("execution-report")
+                            .data(Map.of(
+                                "clOrdId",   clOrdId,
+                                "execType",  String.valueOf(execReportDecoder.execType()),
+                                "ordStatus", String.valueOf(execReportDecoder.ordStatus()),
+                                "symbol",    execReportDecoder.symbolAsString(),
+                                "side",      String.valueOf(execReportDecoder.side()))));
+                        emitter.complete();
+                    }
+                    catch (final Exception e)
+                    {
+                        emitter.completeWithError(e);
+                    }
+                    emitterRegistry.remove(clOrdId);
+                }
             }
             return Action.CONTINUE;
         }
@@ -70,47 +132,22 @@ public class FixClientSessionHandler implements SessionAcquireHandler
         public void onTimeout(final int libraryId, final Session session)
         {
             System.out.printf("[Client] Session timeout: libraryId=%d sessionId=%d%n",
-                    libraryId, session.id());
+                libraryId, session.id());
         }
 
         @Override
         public void onSlowStatus(final int libraryId, final Session session, final boolean hasBecomeSlow)
         {
             System.out.printf("[Client] Slow-consumer: hasBecomeSlow=%b sessionId=%d%n",
-                    hasBecomeSlow, session.id());
+                hasBecomeSlow, session.id());
         }
 
         @Override
         public Action onDisconnect(final int libraryId, final Session session, final DisconnectReason reason)
         {
             System.out.printf("[Client] Disconnected: sessionId=%d reason=%s%n",
-                    session.id(), reason);
+                session.id(), reason);
             return Action.CONTINUE;
-        }
-
-        @Override
-        public void onSessionStart(final Session session)
-        {
-            final CompositeKey key = session.compositeKey();
-            System.out.printf("[Client] Logon complete: local=%s remote=%s%n",
-                    key.localCompId(), key.remoteCompId());
-
-            // Build a hardcoded NOS: AAPL BUY 100 @ 185.50 LIMIT
-            nos.reset();
-            nos.clOrdID("FIX-NOS-001");
-//            nos.handlInst('3');                             // FIX 4.4 tag 21: '3'=Manual, required field
-            nos.instrument().symbol("AAPL");
-            nos.side('1');                              // FIX 4.4 tag 54: '1'=BUY
-            nos.ordType('2');                           // FIX 4.4 tag 40: '2'=LIMIT
-            nos.price(18550L, -2);                      // 18550 × 10^-2 = 185.50
-            nos.orderQtyData().orderQty(100L, 0);       // 100 × 10^0 = 100
-
-            // TransactTime (tag 60) — required in FIX 4.4 NOS
-            final int tsLen = tsEncoder.encode(System.currentTimeMillis());
-            nos.transactTime(tsEncoder.buffer(), 0, tsLen);
-
-            final long result = session.trySend(nos);
-            System.out.printf("[Client] Sent NOS FIX-NOS-001: trySend result=%d%n", result);
         }
     }
 }

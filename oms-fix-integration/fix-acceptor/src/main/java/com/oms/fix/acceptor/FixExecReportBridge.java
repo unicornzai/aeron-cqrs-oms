@@ -98,7 +98,8 @@ public final class FixExecReportBridge implements FragmentHandler
         final char fixSide = event.side() == Side.BUY ? '1' : '2';
 
         execReport.reset();
-        execReport.orderID(Long.toString(orderId));
+        // TODO(POC): use exchange-assigned orderID in production; for now reflect clOrdId so the client can correlate via SSE.
+        execReport.orderID(state.clOrdId);
         execReport.execID(Long.toString(execIdSeq.getAndIncrement()));
         execReport.execType('0');      // 0 = New
         execReport.ordStatus('0');     // 0 = New
@@ -140,7 +141,8 @@ public final class FixExecReportBridge implements FragmentHandler
         }
 
         execReport.reset();
-        execReport.orderID(Long.toString(orderId));
+        // TODO(POC): use exchange-assigned orderID in production; for now reflect clOrdId so the client can correlate via SSE.
+        execReport.orderID(state.clOrdId);
         execReport.execID(Long.toString(execIdSeq.getAndIncrement()));
         execReport.execType('8');      // 8 = Rejected
         execReport.ordStatus('8');     // 8 = Rejected

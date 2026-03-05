@@ -85,6 +85,20 @@
         <field name="transactTime"   id="7"  type="transactTime"/>
     </sbe:message>
 
+    <sbe:message name="OrderCancelReplaceRequestCommand" id="12"
+                 description="FIX OrderCancelReplaceRequest (G) translated into internal binary form">
+        <field name="sequenceNumber" id="1"  type="sequenceNumber"/>
+        <field name="sessionId"      id="2"  type="sessionId"/>
+        <field name="clOrdId"        id="3"  type="clOrdId"/>
+        <field name="origClOrdId"    id="4"  type="clOrdId"/>
+        <field name="symbol"         id="5"  type="symbol"/>
+        <field name="side"           id="6"  type="SideEnum"/>
+        <field name="ordType"        id="7"  type="OrdTypeEnum"/>
+        <field name="price"          id="8"  type="Decimal64"/>
+        <field name="orderQty"       id="9"  type="Decimal64"/>
+        <field name="transactTime"   id="10" type="transactTime"/>
+    </sbe:message>
+
     <!-- ═══════════════════════════════════════════════════════════════════ -->
     <!-- INTERNAL DOMAIN COMMANDS  (templateId 20–29)                       -->
     <!-- Emitted by FixOrderAggregateAgent; consumed by OrderAggregate.     -->

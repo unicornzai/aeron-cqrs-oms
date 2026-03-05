@@ -18,16 +18,10 @@ import java.nio.file.Paths;
 import java.util.Collections;
 
 /**
- * M2: Artio FIX initiator — connects to {@link FixAcceptorMain} on port 9880.
+ * Original bare Artio initiator (M2/M3). Superseded by {@link FixClientApplication}
+ * + {@link FixInitiatorService} in Milestone 9. Kept for reference; not executed.
  *
- * <p>Establishes a FIX 4.4 session (Logon 35=A), maintains heartbeats automatically,
- * and disconnects cleanly (Logout 35=5) on Ctrl-C.
- *
- * <p>Run <em>after</em> the acceptor is up. Each process has its own
- * {@link ArchivingMediaDriver}; the client uses archive port 8020 to avoid
- * conflicting with the acceptor's archive on port 8010.
- *
- * // TODO(POC): Replace with Spring Boot {@code FixInitiatorService} in Milestone 9.
+ * // TODO(POC): Remove once M9 is fully validated.
  */
 public class FixClientMain
 {
@@ -89,10 +83,10 @@ public class FixClientMain
         // Step 3: Launch engine then library.
         final FixEngine engine = FixEngine.launch(engineCfg);
 
-        final FixClientSessionHandler sessionHandler = new FixClientSessionHandler();
-
+        // M9: FixClientSessionHandler is now a Spring component — not usable here.
+        // Use FixClientApplication instead of this class.
         final LibraryConfiguration libraryCfg = new LibraryConfiguration()
-                .sessionAcquireHandler(sessionHandler)
+                .sessionAcquireHandler(null)
                 .sessionExistsHandler(
                         (library, surrogateId, localCompId, localSubId, localLocationId,
                          remoteCompId, remoteSubId, remoteLocationId, logonSeqNum, seqIndex) ->
