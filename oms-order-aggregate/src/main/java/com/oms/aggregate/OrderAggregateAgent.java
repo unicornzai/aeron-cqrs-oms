@@ -2,6 +2,7 @@ package com.oms.aggregate;
 
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
+import com.oms.fix.sbe.PlaceOrderCommandDecoder;
 import com.oms.sbe.AmendOrderCommandDecoder;
 import com.oms.sbe.CancelOrderCommandDecoder;
 import com.oms.sbe.CancelReason;
@@ -61,6 +62,11 @@ public class OrderAggregateAgent implements Agent {
     // Pre-allocated encoding state — never allocate inside doWork()
     private final UnsafeBuffer encodingBuffer = new UnsafeBuffer(new byte[512]);
     private final MessageHeaderDecoder headerDecoder    = new MessageHeaderDecoder();
+    // Separate fix-sbe header decoder for PlaceOrderCommand cross-schema wrapAndApplyHeader.
+    // Both schemas use identical 8-byte header wire format; the type must match the encoder used.
+    private final com.oms.fix.sbe.MessageHeaderDecoder fixHeaderDecoder =
+        new com.oms.fix.sbe.MessageHeaderDecoder();
+    private final PlaceOrderCommandDecoder placeOrderCmdDecoder = new PlaceOrderCommandDecoder();
     private final MessageHeaderEncoder headerEncoder    = new MessageHeaderEncoder();
     private final NewOrderCommandDecoder     cmdDecoder        = new NewOrderCommandDecoder();
     private final CancelOrderCommandDecoder  cancelCmdDecoder  = new CancelOrderCommandDecoder();
@@ -250,6 +256,10 @@ public class OrderAggregateAgent implements Agent {
             handleCancelOrder(buffer, offset);
         } else if (templateId == AmendOrderCommandDecoder.TEMPLATE_ID) {
             handleAmendOrder(buffer, offset);
+        } else if (templateId == PlaceOrderCommandDecoder.TEMPLATE_ID) {
+            // PlaceOrderCommand (fix-sbe, templateId=20) — emitted by FixOrderAggregateAgent
+            // after translating a FIX NewOrderSingle. Shares the sequenced Command Stream.
+            handlePlaceOrder(buffer, offset);
         }
     }
 
@@ -467,6 +477,121 @@ public class OrderAggregateAgent implements Agent {
                 .append("[aggregate] failed to publish OrderAmendedEvent orderId=").append(orderId)
                 .append(" result=").append(result)
                 .commit();
+        }
+    }
+
+    // ── FIX PlaceOrderCommand handler ─────────────────────────────────────────
+
+    /**
+     * Handles {@code PlaceOrderCommand} (fix-sbe templateId=20) arriving on the sequenced
+     * Command Stream after being translated from a FIX NewOrderSingle by
+     * {@link com.oms.fix.aggregate.FixOrderAggregateAgent}.
+     *
+     * <p>Validates symbol non-empty, qty > 0, price > 0 for LIMIT orders.
+     * On success emits {@code OrderAcceptedEvent}; on failure emits {@code OrderRejectedEvent}.
+     *
+     * TODO(POC): accountId=0 and TimeInForce.DAY are defaults — PlaceOrderCommand has no acct/TIF
+     */
+    private void handlePlaceOrder(DirectBuffer buffer, int offset) {
+        // wrapAndApplyHeader requires the fix-sbe header decoder — same wire format, different type
+        placeOrderCmdDecoder.wrapAndApplyHeader(buffer, offset, fixHeaderDecoder);
+
+        final long   orderId    = placeOrderCmdDecoder.orderId();
+        final String rawSymbol  = placeOrderCmdDecoder.symbol();
+        // SBE char arrays may be NUL/space padded — strip trailing garbage
+        int end = rawSymbol.length();
+        while (end > 0 && (rawSymbol.charAt(end - 1) == '\0' || rawSymbol.charAt(end - 1) == ' ')) end--;
+        final String symbol = rawSymbol.substring(0, end);
+
+        final com.oms.fix.sbe.SideEnum   fixSide    = placeOrderCmdDecoder.side();
+        final com.oms.fix.sbe.OrdTypeEnum fixOrdType = placeOrderCmdDecoder.ordType();
+
+        final long priceFixed8 = decimal64ToFixed8(
+            placeOrderCmdDecoder.price().mantissa(), placeOrderCmdDecoder.price().exponent());
+        final long qtyFixed8   = decimal64ToFixed8(
+            placeOrderCmdDecoder.orderQty().mantissa(), placeOrderCmdDecoder.orderQty().exponent());
+
+        // Validation
+        if (symbol.isEmpty()) {
+            publishReject(orderId, 0L, 0L, RejectReason.UNKNOWN_INSTRUMENT);
+            return;
+        }
+        if (qtyFixed8 <= 0) {
+            publishReject(orderId, 0L, 0L, RejectReason.INVALID_QUANTITY);
+            return;
+        }
+        if (fixOrdType == com.oms.fix.sbe.OrdTypeEnum.LIMIT && priceFixed8 <= 0) {
+            publishReject(orderId, 0L, 0L, RejectReason.INVALID_PRICE);
+            return;
+        }
+        if (orders.containsKey(orderId)) {
+            publishReject(orderId, 0L, 0L, RejectReason.DUPLICATE_ORDER);
+            return;
+        }
+
+        // Map fix-sbe enums → oms-sbe enums (both use 0=BUY/LIMIT, 1=SELL/MARKET)
+        final Side      side      = fixSide    == com.oms.fix.sbe.SideEnum.BUY     ? Side.BUY      : Side.SELL;
+        final OrderType orderType = fixOrdType == com.oms.fix.sbe.OrdTypeEnum.LIMIT ? OrderType.LIMIT : OrderType.MARKET;
+
+        // Fit symbol (up to 20 chars) into instrument field (12 chars) — truncate if needed
+        final String instrument = symbol.length() > 12 ? symbol.substring(0, 12) : symbol;
+
+        acceptedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+            .sequenceNumber(0)           // Sequencer overwrites this
+            .timestamp(System.nanoTime())
+            .correlationId(0L)           // TODO(POC): no correlationId in PlaceOrderCommand
+            .orderId(orderId)
+            .accountId(0L)               // TODO(POC): no accountId in PlaceOrderCommand
+            .instrument(instrument)
+            .side(side)
+            .orderType(orderType)
+            .timeInForce(TimeInForce.DAY) // TODO(POC): no TIF in PlaceOrderCommand — default DAY
+            .price(priceFixed8)
+            .quantity(qtyFixed8);
+
+        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderAcceptedEventEncoder.BLOCK_LENGTH;
+        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
+        if (result > 0) {
+            orders.put(orderId, new OrderState(
+                orderId, 0L, instrument, side, orderType, TimeInForce.DAY,
+                priceFixed8, qtyFixed8, OrderStatus.OPEN));
+            log.info()
+                .append("[aggregate] FIX PlaceOrder accepted orderId=").append(orderId)
+                .append(" symbol=").append(instrument)
+                .append(" qty=").append(qtyFixed8)
+                .append(" price=").append(priceFixed8)
+                .commit();
+        } else {
+            log.warn()
+                .append("[aggregate] failed to publish OrderAcceptedEvent for PlaceOrder orderId=").append(orderId)
+                .append(" result=").append(result)
+                .commit();
+        }
+    }
+
+    /**
+     * Converts a {@code Decimal64} (mantissa × 10^exponent) to the OMS fixed-point
+     * representation (value × 10^8).
+     *
+     * <p>result = mantissa × 10^(8+exponent)
+     *
+     * <p>Common case: {@code FixSessionHandler} encodes prices with {@code exponent = -scale},
+     * e.g. 185.50 → mantissa=18550, exponent=-2 → fixed8 = 18550 × 10^6 = 18_550_000_000.
+     * For qty with scale=0: mantissa=100, exponent=0 → fixed8 = 100 × 10^8 = 10_000_000_000.
+     *
+     * <p>Special case exponent=-8 (set by some encoders): shift=0 → identity, result=mantissa.
+     */
+    private static long decimal64ToFixed8(final long mantissa, final byte exponent) {
+        final int shift = 8 + exponent;
+        if (shift == 0) return mantissa;
+        if (shift > 0) {
+            long result = mantissa;
+            for (int i = 0; i < shift; i++) result *= 10;
+            return result;
+        } else {
+            long result = mantissa;
+            for (int i = 0; i < -shift; i++) result /= 10;
+            return result;
         }
     }
 

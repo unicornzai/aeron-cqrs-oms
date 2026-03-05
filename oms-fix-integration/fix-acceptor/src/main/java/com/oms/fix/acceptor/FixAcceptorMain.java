@@ -7,6 +7,10 @@ import com.oms.fix.sbe.PlaceOrderCommandDecoder;
 import io.aeron.Aeron;
 import io.aeron.Publication;
 import io.aeron.Subscription;
+import io.aeron.archive.Archive;
+import io.aeron.archive.ArchivingMediaDriver;
+import io.aeron.driver.MediaDriver;
+import io.aeron.driver.ThreadingMode;
 import org.agrona.concurrent.AgentRunner;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import uk.co.real_logic.artio.engine.EngineConfiguration;
@@ -15,99 +19,139 @@ import uk.co.real_logic.artio.engine.LowResourceEngineScheduler;
 import uk.co.real_logic.artio.library.FixLibrary;
 import uk.co.real_logic.artio.library.LibraryConfiguration;
 
+import java.io.File;
+import java.nio.file.Paths;
 import java.util.Collections;
 
 /**
- * M2: Artio FIX acceptor — listens on TCP port 9880, logs Logon/Logout.
+ * FIX acceptor — listens on TCP port 9880 and bridges FIX orders into the OMS.
  *
- * <p>Requires {@link com.oms.driver.OmsMediaDriverMain} to be running first.
- * All processes share the Aeron dir at {@value #AERON_DIR} and the archive on port 8010.
- *
- * <p>Bootstrap order (required by Artio):
+ * <p>Uses TWO Aeron connections:
  * <ol>
- *   <li>{@code OmsMediaDriverMain} — shared ArchivingMediaDriver (external process)
- *   <li>Configure {@link EngineConfiguration#aeronArchiveContext()} to point at port 8010.
- *   <li>Call {@link FixEngine#launch(EngineConfiguration)}, which connects to the running driver.
- *   <li>Connect a {@link FixLibrary} on the same IPC channel.
+ *   <li>Artio internal ({@value #ARTIO_AERON_DIR}) — Artio's engine↔library IPC and its own
+ *       archive for FIX message replay. Backed by an embedded {@link ArchivingMediaDriver}.
+ *       Artio creates its Aeron connections via {@code System.setProperty("aeron.dir", ...)}
+ *       which is set to this dir.
+ *   <li>OMS IPC ({@code /tmp/aeron-oms}) — shared with {@link com.oms.driver.OmsMediaDriverMain}
+ *       and OmsApp. Used exclusively for OMS publications/subscriptions. Connected via explicit
+ *       {@code aeronDirectoryName("/tmp/aeron-oms")} — unaffected by the system property.
  * </ol>
  *
- * <p>Run before FixClientMain. Press Ctrl-C for a clean Logout.
+ * <p>Startup order: OmsMediaDriverMain → OmsApp → this → FixClientMain.
+ * OmsApp must be running before orders flow because it hosts the sole SequencerAgent.
+ *
+ * <p>Message flow:
+ * <pre>
+ *   FIX NOS → FixSessionHandler → COMMAND_INGRESS(10) [via omsAeron]
+ *          → OmsApp.SequencerAgent stamps → COMMAND_STREAM(1)
+ *          → FixOrderAggregateAgent translates NOS→PlaceOrder → COMMAND_INGRESS(10)
+ *          → OmsApp.SequencerAgent stamps → COMMAND_STREAM(1)
+ *          → OmsApp.OrderAggregateAgent → OrderAcceptedEvent → EVENT_STREAM(2)
+ * </pre>
+ *
+ * <p>There is intentionally NO FixSequencerAgent in this process. OmsApp's SequencerAgent
+ * is the sole sequencer — running two would double-stamp every message.
  */
 public class FixAcceptorMain
 {
-    // Artio engine↔library channel — IPC since both run in the same JVM process.
+    // Artio engine↔library channel — IPC within this process only (Artio's own Aeron dir).
     static final String LIBRARY_CHANNEL = "aeron:ipc";
     static final int FIX_PORT = 9880;
     private static final String LOG_DIR = "./fix-acceptor-logs";
 
-    // Shared Aeron dir — must match OmsMediaDriverMain.AERON_DIR
-    private static final String AERON_DIR = "/tmp/aeron-oms";
+    // ── Artio's private Aeron dir + embedded archive ──────────────────────────
+    // Completely isolated from the shared OMS driver. Artio uses this for internal
+    // engine↔library IPC and for recording FIX messages for resend/replay.
+    private static final String ARTIO_AERON_DIR  = "./aeron-fix-acceptor";
+    private static final String ARTIO_ARCHIVE_DIR = "./fix-acceptor-archive";
+    // Fixed ports for Artio's archive — no collision with OMS (8010) or client (8020).
+    private static final String ARTIO_ARCHIVE_CONTROL     = "aeron:udp?endpoint=localhost:8030";
+    private static final String ARTIO_ARCHIVE_RESPONSE    = "aeron:udp?endpoint=localhost:8031";
+    private static final String ARTIO_ARCHIVE_REPLICATION = "aeron:udp?endpoint=localhost:0";
 
-    // All processes share the single archive on port 8010 (run by OmsMediaDriverMain).
-    // Artio's internal archive client needs a fixed response port — ephemeral :0 can hang.
-    // 8031 is dedicated to this process's archive responses; no collision with OmsApp (:0)
-    // or the FIX client (8021).
-    private static final String ARCHIVE_CONTROL_CHANNEL  = "aeron:udp?endpoint=localhost:8010";
-    private static final String ARCHIVE_RESPONSE_CHANNEL = "aeron:udp?endpoint=localhost:8031";
+    // ── Shared OMS driver dir ─────────────────────────────────────────────────
+    // Used only for OMS IPC pub/sub (commandPub, fixAggCommandSub, etc.).
+    // Does NOT go through Artio — connected via explicit aeronDirectoryName().
+    private static final String OMS_AERON_DIR = "/tmp/aeron-oms";
 
     public static void main(final String[] args) throws Exception
     {
-        // Force Artio's internal Aeron.connect() calls to use the shared driver dir.
-        System.setProperty("aeron.dir", AERON_DIR);
+        final String artioAeronDirAbsolute = Paths.get(ARTIO_AERON_DIR).toAbsolutePath().normalize().toString();
 
-        // Step 1: Connect Aeron to the shared driver (OmsMediaDriverMain must be running).
-        final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
+        // System property controls where Artio's internal Aeron.connect() looks for the driver.
+        // MUST point to Artio's own dir, not the shared OMS dir — otherwise Artio's engine↔library
+        // IPC would land on the shared driver and conflict with other Artio processes.
+        System.setProperty("aeron.dir", artioAeronDirAbsolute);
 
-        // Acceptor publishes raw FIX commands here; Sequencer reads from this stream.
-        final Publication commandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        // ── Step 1: Embedded ArchivingMediaDriver for Artio ───────────────────
+        // Artio's FixEngine calls Aeron.connect() internally — it needs a running driver.
+        // ThreadingMode.DEDICATED: gives the conductor its own thread so its CnC heartbeat
+        // is always updated promptly. SHARED shares one thread with sender+receiver — on a
+        // loaded system with many JVMs competing, the conductor can miss its 10s keepalive
+        // window and trigger DriverTimeoutException during FixEngine startup.
+        final ArchivingMediaDriver artioDriver = ArchivingMediaDriver.launch(
+            new MediaDriver.Context()
+                .aeronDirectoryName(artioAeronDirAbsolute)
+                .dirDeleteOnStart(true)
+                .threadingMode(ThreadingMode.DEDICATED),
+            new Archive.Context()
+                .archiveDir(new File(ARTIO_ARCHIVE_DIR))
+                .deleteArchiveOnStart(true)
+                .controlChannel(ARTIO_ARCHIVE_CONTROL)
+                .replicationChannel(ARTIO_ARCHIVE_REPLICATION)
+                .recordingEventsEnabled(false)
+                .aeronDirectoryName(artioAeronDirAbsolute)
+        );
+
+        // ── Step 2: Separate Aeron connection to the shared OMS driver ────────
+        // Explicit aeronDirectoryName() overrides System.setProperty — connects to OmsMediaDriverMain.
+        // All OMS pub/sub use this instance; Artio uses the one above via System.setProperty.
+        final Aeron omsAeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(OMS_AERON_DIR));
+
+        // Acceptor publishes NOS to COMMAND_INGRESS; OmsApp.SequencerAgent reads and stamps it.
+        final Publication commandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
         final CommandStreamPublisher publisher = new CommandStreamPublisher(commandPub);
 
-        // M4: Sequencer — reads stream 10 (raw), stamps seq number, republishes to stream 1 (sequenced).
-        // The Subscription must be created before the Publication is first offered to, otherwise
-        // Aeron may not see a connected subscriber. Both live in this process's Aeron instance.
-        final Subscription commandIngressSub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
-        final Publication  sequencedCommandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-
-        final FixSequencerAgent sequencerAgent = new FixSequencerAgent(commandIngressSub, sequencedCommandPub);
-        // YieldingIdleStrategy: spins briefly then yields — good balance for a low-latency POC.
-        final AgentRunner sequencerRunner = new AgentRunner(
-            new YieldingIdleStrategy(), Throwable::printStackTrace, null, sequencerAgent);
-        AgentRunner.startOnThread(sequencerRunner);
-
-        // M5: FixOrderAggregateAgent — subscribes to sequenced commands (stream 1),
-        // translates NewOrderSingleCommand (templateId=10) → PlaceOrderCommand (templateId=20),
-        // and publishes back to stream 10 so the sequencer stamps it and re-delivers on stream 1.
-        final Subscription fixAggCommandSub   = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-        final Publication  internalCommandPub = aeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        // FixOrderAggregateAgent reads from COMMAND_STREAM(1) — after OmsApp's sequencer has
+        // stamped the NOS. It translates NOS→PlaceOrder and publishes back to COMMAND_INGRESS(10).
+        // OmsApp must be running for messages to appear on COMMAND_STREAM(1).
+        final Subscription fixAggCommandSub   = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+        final Publication  internalCommandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
 
         final FixOrderAggregateAgent fixAggAgent = new FixOrderAggregateAgent(fixAggCommandSub, internalCommandPub);
         final AgentRunner fixAggRunner = new AgentRunner(
             new YieldingIdleStrategy(), Throwable::printStackTrace, null, fixAggAgent);
         AgentRunner.startOnThread(fixAggRunner);
 
-        // M5 verification: second subscriber on stream 1 to confirm PlaceOrderCommand appears.
-        final Subscription         verifyPlaceOrderSub = aeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+        // M7 verification — two independent check points on the shared OMS streams.
+        final Subscription         verifyPlaceOrderSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+        final Subscription         verifyEventSub      = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.EVENT_STREAM);
         final MessageHeaderDecoder verifyHeaderDecoder = new MessageHeaderDecoder();
         final PlaceOrderCommandDecoder verifyPlaceDecoder = new PlaceOrderCommandDecoder();
 
-        // Step 2: Configure FixEngine — point aeronArchiveContext at the shared archive (port 8010).
+        // ── Step 3: Configure FixEngine with Artio's own archive ─────────────
+        // aeronContext: pass explicit dir + 30s timeout to Artio's internal Aeron client.
+        // Belt-and-suspenders alongside DEDICATED threading — handles any residual slow startup.
         final EngineConfiguration engineCfg = new EngineConfiguration()
             .bindTo("0.0.0.0", FIX_PORT)
             .libraryAeronChannel(LIBRARY_CHANNEL)
             .logFileDir(LOG_DIR)
             .deleteLogFileDirOnStart(true)
-            // LowResourceEngineScheduler collapses framer/sender/receiver threads — POC only.
             .scheduler(new LowResourceEngineScheduler());
 
-        engineCfg.aeronArchiveContext()
-            .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)   // shared archive UDP 8010
-            .controlResponseChannel(ARCHIVE_RESPONSE_CHANNEL) // fixed port 8031 — avoids ephemeral hang
-            .aeronDirectoryName(AERON_DIR);
+        // aeronContext() returns the existing Aeron.Context stored inside EngineConfiguration.
+        // Mutate it in place — Artio 0.153 has no setter, only the getter.
+        engineCfg.aeronContext().driverTimeoutMs(30_000L);
 
-        // Step 3: Launch engine (connects to the running shared driver).
+        engineCfg.aeronArchiveContext()
+            .controlRequestChannel(ARTIO_ARCHIVE_CONTROL)   // Artio's own archive — NOT the shared OMS archive
+            .controlResponseChannel(ARTIO_ARCHIVE_RESPONSE)
+            .aeronDirectoryName(artioAeronDirAbsolute);
+
+        // ── Step 4: Launch engine (connects to artioDriver via System.setProperty) ──
         final FixEngine engine = FixEngine.launch(engineCfg);
 
-        // Step 4: Connect FixLibrary (connects to engine via IPC).
+        // ── Step 5: Connect FixLibrary ────────────────────────────────────────
         final FixSessionAcquireHandler acquireHandler = new FixSessionAcquireHandler(publisher);
 
         final LibraryConfiguration libraryCfg = new LibraryConfiguration()
@@ -123,22 +167,49 @@ public class FixAcceptorMain
 
         final FixLibrary library = FixLibrary.connect(libraryCfg);
 
-        // Shutdown: close in reverse order — library → agents → Aeron → engine.
-        // Driver is managed by OmsMediaDriverMain — do NOT close it here.
+        // ── Step 6: Wait for OmsApp pipeline to be ready ─────────────────────
+        // commandPub (stream 10) is NOT_CONNECTED until OmsApp's commandIngressSub is live.
+        // internalCommandPub likewise needs OmsApp's sequencer subscription.
+        // Without this wait, the first NOS arrives before OmsApp is ready and is silently dropped.
+        System.out.println("[Acceptor] Waiting for OmsApp commandIngress connection (stream 10)...");
+        final long connectionDeadline = System.currentTimeMillis() + 30_000L;
+        while (!commandPub.isConnected() || !internalCommandPub.isConnected())
+        {
+            if (System.currentTimeMillis() > connectionDeadline)
+            {
+                System.err.println("[Acceptor] FATAL: OmsApp not connected after 30s — " +
+                    "ensure OmsMediaDriverMain and OmsApp are both running before starting the acceptor.");
+                library.close();
+                fixAggRunner.close();
+                verifyPlaceOrderSub.close();
+                verifyEventSub.close();
+                fixAggCommandSub.close();
+                internalCommandPub.close();
+                commandPub.close();
+                omsAeron.close();
+                engine.close();
+                artioDriver.close();
+                return;
+            }
+            library.poll(10);
+            Thread.sleep(10);
+        }
+        System.out.println("[Acceptor] OmsApp pipeline connected — ready to accept FIX orders.");
+
+        // Shutdown: library → agents → omsAeron → engine → artioDriver.
         Runtime.getRuntime().addShutdownHook(new Thread(() ->
         {
             System.out.println("[Acceptor] Shutting down — Artio will send Logout to all sessions.");
             library.close();
             fixAggRunner.close();
-            sequencerRunner.close();
             verifyPlaceOrderSub.close();
+            verifyEventSub.close();
             fixAggCommandSub.close();
             internalCommandPub.close();
-            commandIngressSub.close();
-            sequencedCommandPub.close();
             commandPub.close();
-            aeron.close();
+            omsAeron.close();
             engine.close();
+            artioDriver.close();
         }));
 
         System.out.println("[Acceptor] Listening on port " + FIX_PORT + ". Press Ctrl-C to stop.");
@@ -147,18 +218,31 @@ public class FixAcceptorMain
         {
             library.poll(10);
 
-            // M5 verification: log any PlaceOrderCommand that appears on stream 1.
+            // Verify 1: PlaceOrderCommand on COMMAND_STREAM(1) — confirms FIX→domain translation.
             verifyPlaceOrderSub.poll((buf, off, len, hdr) ->
             {
                 verifyHeaderDecoder.wrap(buf, off);
                 if (verifyHeaderDecoder.templateId() == PlaceOrderCommandDecoder.TEMPLATE_ID)
                 {
                     verifyPlaceDecoder.wrapAndApplyHeader(buf, off, verifyHeaderDecoder);
-                    System.out.printf("[M5-Verify] PlaceOrderCommand orderId=%d symbol=%s side=%s seq=%d%n",
+                    System.out.printf("[M7-Verify] PlaceOrderCommand on COMMAND_STREAM: orderId=%d symbol=%s side=%s seq=%d%n",
                         verifyPlaceDecoder.orderId(),
                         verifyPlaceDecoder.symbol(),
                         verifyPlaceDecoder.side(),
                         verifyPlaceDecoder.sequenceNumber());
+                }
+            }, 10);
+
+            // Verify 2: OrderAcceptedEvent(100) / OrderRejectedEvent(101) on EVENT_STREAM(2)
+            // — confirms OmsApp's OrderAggregateAgent processed the PlaceOrderCommand.
+            verifyEventSub.poll((buf, off, len, hdr) ->
+            {
+                verifyHeaderDecoder.wrap(buf, off);
+                final int tid = verifyHeaderDecoder.templateId();
+                if (tid == 100) {
+                    System.out.println("[M7-Verify] OrderAcceptedEvent on EVENT_STREAM — order live!");
+                } else if (tid == 101) {
+                    System.out.println("[M7-Verify] OrderRejectedEvent on EVENT_STREAM — order rejected.");
                 }
             }, 10);
         }

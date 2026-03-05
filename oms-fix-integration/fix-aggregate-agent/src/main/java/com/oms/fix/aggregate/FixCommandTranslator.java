@@ -54,7 +54,7 @@ public final class FixCommandTranslator
         cmdEncoder.wrapAndApplyHeader(outBuf, 0, headerEncoder);
 
         cmdEncoder
-            .sequenceNumber(0L)               // stamped by FixSequencerAgent
+            .sequenceNumber(0L)               // stamped by OmsApp.SequencerAgent
             .orderId(orderId)
             .symbol(nos.symbol())             // String copy — POC acceptable
             .side(nos.side())
