@@ -1,6 +1,6 @@
 package com.oms.app;
 
-import com.oms.aggregate.OrderAggregateAgent;
+import com.oms.aggregate.client.OrderAggregateAgent;
 import com.oms.api.OrderQueryServer;
 import com.oms.common.OmsStreams;
 import com.oms.handlers.FillSimulatorHandler;

@@ -5,15 +5,16 @@ include(
     "oms-common",
     "oms-sequencer",
     "oms-ingress",
-    "oms-order-aggregate",
     "oms-event-handlers",
     "oms-read-model:oms-read-model-database",
     "oms-read-model:oms-read-model-viewserver",
     "oms-api",
     "oms-app",
     "oms-media-driver",
-    "oms-fix-integration:fix-common",
-    "oms-fix-integration:fix-acceptor",
-    "oms-fix-integration:fix-aggregate-agent",
-    "oms-fix-integration:fix-client"
+    "oms-fix-client-gateway:fix-common",
+    "oms-fix-client-gateway:fix-acceptor",
+    "oms-fix-client-gateway:fix-aggregate-agent",
+    "oms-fix-client-gateway:fix-client",
+    "oms-command-handlers:oms-aggregate-fix-order",
+    "oms-command-handlers:oms-aggregate-client-order"
 )
