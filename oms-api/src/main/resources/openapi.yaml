@@ -2,7 +2,7 @@ openapi: "3.0.3"
 info:
   title: Aeron OMS POC API
   description: |
-    Order Management System POC built on Aeron IPC + SBE.
+    Order Management System built on Aeron IPC + SBE.
 
     **Two server ports:**
     - Port **8080** — Ingress (commands: new, cancel, amend orders)

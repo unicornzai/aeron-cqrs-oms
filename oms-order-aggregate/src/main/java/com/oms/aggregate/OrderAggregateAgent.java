@@ -3,26 +3,7 @@ package com.oms.aggregate;
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
 import com.oms.fix.sbe.PlaceOrderCommandDecoder;
-import com.oms.sbe.AmendOrderCommandDecoder;
-import com.oms.sbe.CancelOrderCommandDecoder;
-import com.oms.sbe.CancelReason;
-import com.oms.sbe.CancelRejectedEventEncoder;
-import com.oms.sbe.MessageHeaderDecoder;
-import com.oms.sbe.MessageHeaderEncoder;
-import com.oms.sbe.NewOrderCommandDecoder;
-import com.oms.sbe.OrderAcceptedEventDecoder;
-import com.oms.sbe.OrderAcceptedEventEncoder;
-import com.oms.sbe.OrderAmendedEventDecoder;
-import com.oms.sbe.OrderAmendedEventEncoder;
-import com.oms.sbe.OrderCancelledEventDecoder;
-import com.oms.sbe.OrderCancelledEventEncoder;
-import com.oms.sbe.OrderFilledEventDecoder;
-import com.oms.sbe.OrderPartiallyFilledEventDecoder;
-import com.oms.sbe.OrderRejectedEventEncoder;
-import com.oms.sbe.OrderType;
-import com.oms.sbe.RejectReason;
-import com.oms.sbe.Side;
-import com.oms.sbe.TimeInForce;
+import com.oms.sbe.*;
 import com.oms.common.OmsStreams;
 import io.aeron.Aeron;
 import io.aeron.Image;
@@ -52,7 +33,7 @@ import java.util.Map;
  * TODO(POC): Archive replay blocks onStart() — live commands buffer in Aeron term buffer.
  *            Size term buffer based on max replay duration × msg rate.
  */
-public class OrderAggregateAgent implements Agent {
+public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agent {
 
     private static final Log log = LogFactory.getLog(OrderAggregateAgent.class);
 
@@ -75,14 +56,18 @@ public class OrderAggregateAgent implements Agent {
     private final OrderPartiallyFilledEventDecoder partialDecoder = new OrderPartiallyFilledEventDecoder();
     private final OrderAcceptedEventEncoder  acceptedEncoder   = new OrderAcceptedEventEncoder();
     private final OrderRejectedEventEncoder  rejectedEncoder   = new OrderRejectedEventEncoder();
+    private final OrderRejectedEventDecoder rejectedDecoder   = new OrderRejectedEventDecoder();
     private final OrderCancelledEventEncoder cancelledEncoder  = new OrderCancelledEventEncoder();
+    private final OrderCancelledEventDecoder cancelledDecoder  = new OrderCancelledEventDecoder();
     private final OrderAmendedEventEncoder   amendedEncoder    = new OrderAmendedEventEncoder();
+    private final OrderAmendedEventDecoder   amendedDecoder    = new OrderAmendedEventDecoder();
     private final CancelRejectedEventEncoder cancelRejEncoder  = new CancelRejectedEventEncoder();
+    private final CancelRejectedEventDecoder cancelRejDecoder  = new CancelRejectedEventDecoder();
 
     // Pre-allocated replay decoders — reused across all replayed messages
     private final OrderAcceptedEventDecoder  replayAcceptedDecoder  = new OrderAcceptedEventDecoder();
     private final OrderCancelledEventDecoder replayCancelledDecoder = new OrderCancelledEventDecoder();
-    private final OrderAmendedEventDecoder   replayAmendedDecoder   = new OrderAmendedEventDecoder();
+
 
     private final Subscription commandStreamSub;
     private final Subscription eventStreamSub;
@@ -203,27 +188,25 @@ public class OrderAggregateAgent implements Agent {
         switch (headerDecoder.templateId()) {
             case OrderAcceptedEventDecoder.TEMPLATE_ID -> {
                 replayAcceptedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-                final long orderId = replayAcceptedDecoder.orderId();
-                orders.computeIfAbsent(orderId, id -> new OrderState(
-                        id, replayAcceptedDecoder.accountId(), replayAcceptedDecoder.instrument(),
-                        replayAcceptedDecoder.side(), replayAcceptedDecoder.orderType(),
-                        replayAcceptedDecoder.timeInForce(),
-                        replayAcceptedDecoder.price(), replayAcceptedDecoder.quantity(),
-                        OrderStatus.OPEN));
+                applyOrderAcceptedEvent(replayAcceptedDecoder);
+            }
+            case OrderRejectedEventDecoder.TEMPLATE_ID -> {
+                rejectedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                applyOrderRejectedEvent(rejectedDecoder);
+            }
+            case CancelRejectedEventDecoder.TEMPLATE_ID -> {
+                cancelRejDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                applyCancelRejectedEvent(cancelRejDecoder);
             }
             case OrderCancelledEventDecoder.TEMPLATE_ID -> {
                 replayCancelledDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-                final OrderState s = orders.get(replayCancelledDecoder.orderId());
-                if (s != null) s.status = OrderStatus.CANCELLED;
+                applyOrderCancelledEvent(replayCancelledDecoder);
             }
             case OrderAmendedEventDecoder.TEMPLATE_ID -> {
-                replayAmendedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-                final OrderState s = orders.get(replayAmendedDecoder.orderId());
-                if (s != null) {
-                    s.currentPrice    = replayAmendedDecoder.newPrice();
-                    s.currentQuantity = replayAmendedDecoder.newQuantity();
-                }
+                amendedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                applyOrderAmmendedEvent(amendedDecoder);
             }
+
             case OrderFilledEventDecoder.TEMPLATE_ID -> {
                 filledDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
                 final OrderState s = orders.get(filledDecoder.orderId());
@@ -240,7 +223,6 @@ public class OrderAggregateAgent implements Agent {
                     s.status = OrderStatus.PARTIALLY_FILLED;
                 }
             }
-            // OrderRejectedEvent(101), CancelRejectedEvent(106) — no state to rebuild, skip
         }
     }
 
@@ -250,16 +232,14 @@ public class OrderAggregateAgent implements Agent {
         headerDecoder.wrap(buffer, offset);
         final int templateId = headerDecoder.templateId();
 
-        if (templateId == NewOrderCommandDecoder.TEMPLATE_ID) {
+        if (templateId == PlaceOrderCommandDecoder.TEMPLATE_ID) {
+            handlePlaceOrder(buffer, offset);
+        } else if (templateId == NewOrderCommandDecoder.TEMPLATE_ID) {
             handleNewOrder(buffer, offset);
         } else if (templateId == CancelOrderCommandDecoder.TEMPLATE_ID) {
             handleCancelOrder(buffer, offset);
         } else if (templateId == AmendOrderCommandDecoder.TEMPLATE_ID) {
             handleAmendOrder(buffer, offset);
-        } else if (templateId == PlaceOrderCommandDecoder.TEMPLATE_ID) {
-            // PlaceOrderCommand (fix-sbe, templateId=20) — emitted by FixOrderAggregateAgent
-            // after translating a FIX NewOrderSingle. Shares the sequenced Command Stream.
-            handlePlaceOrder(buffer, offset);
         }
     }
 
@@ -297,28 +277,49 @@ public class OrderAggregateAgent implements Agent {
     }
 
     // ── Command handlers ──────────────────────────────────────────────────────
-
     private void handleNewOrder(DirectBuffer buffer, int offset) {
         // wrapAndApplyHeader re-wraps headerDecoder and positions the body decoder
         cmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+        handleNewOrder(cmdDecoder);
+    }
 
+    @Override
+    public void handleNewOrder(NewOrderCommandDecoder cmdDecoder) {
         final long orderId       = cmdDecoder.orderId();
         final long accountId     = cmdDecoder.accountId();
         final long price         = cmdDecoder.price();
         final long quantity      = cmdDecoder.quantity();
         final long correlationId = cmdDecoder.correlationId();
 
+        log.info()
+                .append("[order-aggregate] new order command orderId=").append(orderId)
+                .append(" symbol=").append(cmdDecoder.instrument())
+                .append(" qty=").append(quantity)
+                .append(" price=").append(price)
+                .commit();
+
         // Validation — reject path
+        RejectReason rejectReason = null;
         if (price <= 0) {
-            publishReject(orderId, accountId, correlationId, RejectReason.INVALID_PRICE);
-            return;
+            rejectReason = RejectReason.INVALID_PRICE;
         }
-        if (quantity <= 0) {
-            publishReject(orderId, accountId, correlationId, RejectReason.INVALID_QUANTITY);
-            return;
+        else if (quantity <= 0) {
+            rejectReason = RejectReason.INVALID_QUANTITY;
         }
-        if (orders.containsKey(orderId)) {
-            publishReject(orderId, accountId, correlationId, RejectReason.DUPLICATE_ORDER);
+        else if (orders.containsKey(orderId)) {
+            rejectReason = RejectReason.DUPLICATE_ORDER;
+        }
+
+        if (rejectReason != null) {
+            rejectedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+                    .sequenceNumber(0)
+                    .timestamp(System.nanoTime())
+                    .correlationId(0L)
+                    .orderId(orderId)
+                    .accountId(0L)
+                    .rejectReason(rejectReason);
+
+            publishEvent(rejectedEncoder);
             return;
         }
 
@@ -341,143 +342,7 @@ public class OrderAggregateAgent implements Agent {
                 .price(price)
                 .quantity(quantity);
 
-        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderAcceptedEventEncoder.BLOCK_LENGTH;
-        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
-        if (result > 0) {
-            orders.put(orderId, new OrderState(
-                    orderId, accountId, instrument, side, orderType, tif, price, quantity, OrderStatus.OPEN));
-            log.info()
-                .append("[aggregate] accepted orderId=").append(orderId)
-                .append(" status=OPEN")
-                .commit();
-        } else {
-            // TODO(POC): add back-pressure retry budget
-            log.warn()
-                .append("[aggregate] failed to publish OrderAcceptedEvent orderId=").append(orderId)
-                .append(" result=").append(result)
-                .commit();
-        }
-    }
-
-    private void handleCancelOrder(DirectBuffer buffer, int offset) {
-        cancelCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-
-        final long orderId       = cancelCmdDecoder.orderId();
-        final long accountId     = cancelCmdDecoder.accountId();
-        final long correlationId = cancelCmdDecoder.correlationId();
-        final CancelReason reason = cancelCmdDecoder.cancelReason();
-
-        final OrderState state = orders.get(orderId);
-        if (state == null) {
-            log.warn()
-                .append("[aggregate] cancel for unknown orderId=").append(orderId)
-                .commit();
-            return;
-        }
-
-        // Invalid terminal states — reject the cancel
-        if (state.status == OrderStatus.FILLED
-                || state.status == OrderStatus.CANCELLED
-                || state.status == OrderStatus.REJECTED) {
-            // TODO(POC): add ORDER_ALREADY_FILLED / ORDER_ALREADY_CANCELLED reason to RejectReason schema
-            publishCancelRejected(orderId, correlationId, RejectReason.RISK_BREACH);
-            return;
-        }
-
-        // OPEN or PARTIALLY_FILLED — allow cancel
-        cancelledEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
-                .sequenceNumber(0)
-                .timestamp(System.nanoTime())
-                .correlationId(correlationId)
-                .orderId(orderId)
-                .accountId(accountId)
-                .cancelReason(reason);
-
-        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderCancelledEventEncoder.BLOCK_LENGTH;
-        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
-        if (result > 0) {
-            state.status = OrderStatus.CANCELLED;
-            log.info()
-                .append("[aggregate] cancelled orderId=").append(orderId)
-                .append(" → CANCELLED")
-                .commit();
-        } else {
-            // TODO(POC): add back-pressure retry budget
-            log.warn()
-                .append("[aggregate] failed to publish OrderCancelledEvent orderId=").append(orderId)
-                .append(" result=").append(result)
-                .commit();
-        }
-    }
-
-    private void handleAmendOrder(DirectBuffer buffer, int offset) {
-        amendCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-
-        final long orderId       = amendCmdDecoder.orderId();
-        final long accountId     = amendCmdDecoder.accountId();
-        final long correlationId = amendCmdDecoder.correlationId();
-        final long newPrice      = amendCmdDecoder.newPrice();
-        final long newQuantity   = amendCmdDecoder.newQuantity();
-
-        final OrderState state = orders.get(orderId);
-        if (state == null) {
-            log.warn()
-                .append("[aggregate] amend for unknown orderId=").append(orderId)
-                .commit();
-            return;
-        }
-
-        if (state.status != OrderStatus.OPEN && state.status != OrderStatus.PARTIALLY_FILLED) {
-            log.warn()
-                .append("[aggregate] amend rejected orderId=").append(orderId)
-                .append(" status=").append(state.status.name())
-                .commit();
-            return;
-        }
-
-        if (newPrice <= 0) {
-            log.warn()
-                .append("[aggregate] amend rejected orderId=").append(orderId)
-                .append(" invalid newPrice=").append(newPrice)
-                .commit();
-            return;
-        }
-
-        if (newQuantity <= state.filledQuantity) {
-            log.warn()
-                .append("[aggregate] amend rejected orderId=").append(orderId)
-                .append(" newQty=").append(newQuantity)
-                .append(" not above filledQty=").append(state.filledQuantity)
-                .commit();
-            return;
-        }
-
-        amendedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
-                .sequenceNumber(0)
-                .timestamp(System.nanoTime())
-                .correlationId(correlationId)
-                .orderId(orderId)
-                .accountId(accountId)
-                .newPrice(newPrice)
-                .newQuantity(newQuantity);
-
-        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderAmendedEventEncoder.BLOCK_LENGTH;
-        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
-        if (result > 0) {
-            state.currentPrice    = newPrice;
-            state.currentQuantity = newQuantity;
-            log.info()
-                .append("[aggregate] amended orderId=").append(orderId)
-                .append(" newPrice=").append(newPrice)
-                .append(" newQty=").append(newQuantity)
-                .commit();
-        } else {
-            // TODO(POC): add back-pressure retry budget
-            log.warn()
-                .append("[aggregate] failed to publish OrderAmendedEvent orderId=").append(orderId)
-                .append(" result=").append(result)
-                .commit();
-        }
+        publishEvent(acceptedEncoder);
     }
 
     // ── FIX PlaceOrderCommand handler ─────────────────────────────────────────
@@ -495,78 +360,315 @@ public class OrderAggregateAgent implements Agent {
     private void handlePlaceOrder(DirectBuffer buffer, int offset) {
         // wrapAndApplyHeader requires the fix-sbe header decoder — same wire format, different type
         placeOrderCmdDecoder.wrapAndApplyHeader(buffer, offset, fixHeaderDecoder);
+        handlePlaceOrder(placeOrderCmdDecoder);
+    }
 
-        final long   orderId    = placeOrderCmdDecoder.orderId();
-        final String rawSymbol  = placeOrderCmdDecoder.symbol();
+    @Override
+    public void handlePlaceOrder(PlaceOrderCommandDecoder cmdDecoder) {
+        final long   orderId    = cmdDecoder.orderId();
+        final String rawSymbol  = cmdDecoder.symbol();
         // SBE char arrays may be NUL/space padded — strip trailing garbage
         int end = rawSymbol.length();
         while (end > 0 && (rawSymbol.charAt(end - 1) == '\0' || rawSymbol.charAt(end - 1) == ' ')) end--;
         final String symbol = rawSymbol.substring(0, end);
 
-        final com.oms.fix.sbe.SideEnum   fixSide    = placeOrderCmdDecoder.side();
-        final com.oms.fix.sbe.OrdTypeEnum fixOrdType = placeOrderCmdDecoder.ordType();
+        final com.oms.fix.sbe.SideEnum    fixSide    = cmdDecoder.side();
+        final com.oms.fix.sbe.OrdTypeEnum fixOrdType = cmdDecoder.ordType();
 
         final long priceFixed8 = decimal64ToFixed8(
-            placeOrderCmdDecoder.price().mantissa(), placeOrderCmdDecoder.price().exponent());
+                cmdDecoder.price().mantissa(), cmdDecoder.price().exponent());
         final long qtyFixed8   = decimal64ToFixed8(
-            placeOrderCmdDecoder.orderQty().mantissa(), placeOrderCmdDecoder.orderQty().exponent());
+                cmdDecoder.orderQty().mantissa(), cmdDecoder.orderQty().exponent());
+
+        log.info()
+                .append("[order-aggregate] place order command orderId=").append(orderId)
+                .append(" symbol=").append(rawSymbol)
+                .append(" qty=").append(qtyFixed8)
+                .append(" price=").append(priceFixed8)
+                .commit();
 
         // Validation
+        RejectReason rejectReason = null;
         if (symbol.isEmpty()) {
-            publishReject(orderId, 0L, 0L, RejectReason.UNKNOWN_INSTRUMENT);
-            return;
+            rejectReason = RejectReason.UNKNOWN_INSTRUMENT;
         }
-        if (qtyFixed8 <= 0) {
-            publishReject(orderId, 0L, 0L, RejectReason.INVALID_QUANTITY);
-            return;
+        else if (qtyFixed8 <= 0) {
+            rejectReason = RejectReason.INVALID_QUANTITY;
         }
-        if (fixOrdType == com.oms.fix.sbe.OrdTypeEnum.LIMIT && priceFixed8 <= 0) {
-            publishReject(orderId, 0L, 0L, RejectReason.INVALID_PRICE);
-            return;
+        else if (fixOrdType == com.oms.fix.sbe.OrdTypeEnum.LIMIT && priceFixed8 <= 0) {
+            rejectReason = RejectReason.INVALID_PRICE;
         }
-        if (orders.containsKey(orderId)) {
-            publishReject(orderId, 0L, 0L, RejectReason.DUPLICATE_ORDER);
+        else if (orders.containsKey(orderId)) {
+            rejectReason = RejectReason.DUPLICATE_ORDER;
+        }
+
+        if (rejectReason != null) {
+            rejectedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+                    .sequenceNumber(0)
+                    .timestamp(System.nanoTime())
+                    .correlationId(0L)
+                    .orderId(orderId)
+                    .accountId(0L)
+                    .rejectReason(rejectReason);
+
+            publishEvent(rejectedEncoder);
             return;
         }
 
         // Map fix-sbe enums → oms-sbe enums (both use 0=BUY/LIMIT, 1=SELL/MARKET)
-        final Side      side      = fixSide    == com.oms.fix.sbe.SideEnum.BUY     ? Side.BUY      : Side.SELL;
+        final Side      side      = fixSide    == com.oms.fix.sbe.SideEnum.BUY      ? Side.BUY        : Side.SELL;
         final OrderType orderType = fixOrdType == com.oms.fix.sbe.OrdTypeEnum.LIMIT ? OrderType.LIMIT : OrderType.MARKET;
 
         // Fit symbol (up to 20 chars) into instrument field (12 chars) — truncate if needed
         final String instrument = symbol.length() > 12 ? symbol.substring(0, 12) : symbol;
 
         acceptedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
-            .sequenceNumber(0)           // Sequencer overwrites this
-            .timestamp(System.nanoTime())
-            .correlationId(0L)           // TODO(POC): no correlationId in PlaceOrderCommand
-            .orderId(orderId)
-            .accountId(0L)               // TODO(POC): no accountId in PlaceOrderCommand
-            .instrument(instrument)
-            .side(side)
-            .orderType(orderType)
-            .timeInForce(TimeInForce.DAY) // TODO(POC): no TIF in PlaceOrderCommand — default DAY
-            .price(priceFixed8)
-            .quantity(qtyFixed8);
+                .sequenceNumber(0)           // Sequencer overwrites this
+                .timestamp(System.nanoTime())
+                .correlationId(0L)           // TODO(POC): no correlationId in PlaceOrderCommand
+                .orderId(orderId)
+                .accountId(0L)               // TODO(POC): no accountId in PlaceOrderCommand
+                .instrument(instrument)
+                .side(side)
+                .orderType(orderType)
+                .timeInForce(TimeInForce.DAY) // TODO(POC): no TIF in PlaceOrderCommand — default DAY
+                .price(priceFixed8)
+                .quantity(qtyFixed8);
 
+        publishEvent(acceptedEncoder);
+    }
+
+    private void handleCancelOrder(DirectBuffer buffer, int offset) {
+        cancelCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+
+        final long orderId       = cancelCmdDecoder.orderId();
+        final long accountId     = cancelCmdDecoder.accountId();
+        final long correlationId = cancelCmdDecoder.correlationId();
+        final CancelReason reason = cancelCmdDecoder.cancelReason();
+
+        final OrderState state = orders.get(orderId);
+        if (state == null) {
+            log.warn()
+                    .append("[aggregate] cancel for unknown orderId=").append(orderId)
+                    .commit();
+            return;
+        }
+
+        // Invalid terminal states — reject the cancel
+        if (state.status == OrderStatus.FILLED
+                || state.status == OrderStatus.CANCELLED
+                || state.status == OrderStatus.REJECTED) {
+            // TODO(POC): add ORDER_ALREADY_FILLED / ORDER_ALREADY_CANCELLED reason to RejectReason schema
+            cancelRejEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+                    .sequenceNumber(0)
+                    .timestamp(System.nanoTime())
+                    .correlationId(correlationId)
+                    .orderId(orderId)
+                    .rejectReason(RejectReason.RISK_BREACH);
+
+            publishEvent(cancelRejEncoder);
+            return;
+        }
+
+        // OPEN or PARTIALLY_FILLED — allow cancel
+        cancelledEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+                .sequenceNumber(0)
+                .timestamp(System.nanoTime())
+                .correlationId(correlationId)
+                .orderId(orderId)
+                .accountId(accountId)
+                .cancelReason(reason);
+
+        publishEvent(cancelledEncoder);
+    }
+
+    private void handleAmendOrder(DirectBuffer buffer, int offset) {
+        amendCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+
+        final long orderId       = amendCmdDecoder.orderId();
+        final long accountId     = amendCmdDecoder.accountId();
+        final long correlationId = amendCmdDecoder.correlationId();
+        final long newPrice      = amendCmdDecoder.newPrice();
+        final long newQuantity   = amendCmdDecoder.newQuantity();
+
+        final OrderState state = orders.get(orderId);
+        if (state == null) {
+            log.warn()
+                    .append("[aggregate] amend for unknown orderId=").append(orderId)
+                    .commit();
+            return;
+        }
+
+        if (state.status != OrderStatus.OPEN && state.status != OrderStatus.PARTIALLY_FILLED) {
+            log.warn()
+                    .append("[aggregate] amend rejected orderId=").append(orderId)
+                    .append(" status=").append(state.status.name())
+                    .commit();
+            return;
+        }
+
+        if (newPrice <= 0) {
+            log.warn()
+                    .append("[aggregate] amend rejected orderId=").append(orderId)
+                    .append(" invalid newPrice=").append(newPrice)
+                    .commit();
+            return;
+        }
+
+        if (newQuantity <= state.filledQuantity) {
+            log.warn()
+                    .append("[aggregate] amend rejected orderId=").append(orderId)
+                    .append(" newQty=").append(newQuantity)
+                    .append(" not above filledQty=").append(state.filledQuantity)
+                    .commit();
+            return;
+        }
+
+        amendedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+                .sequenceNumber(0)
+                .timestamp(System.nanoTime())
+                .correlationId(correlationId)
+                .orderId(orderId)
+                .accountId(accountId)
+                .newPrice(newPrice)
+                .newQuantity(newQuantity);
+
+        publishEvent(amendedEncoder);
+    }
+
+    // ── Event publishers ──────────────────────────────────────────────────────
+
+    private void publishEvent(OrderAcceptedEventEncoder eventEncoder) {
         final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderAcceptedEventEncoder.BLOCK_LENGTH;
+        final long result = eventIngressPub.offer(eventEncoder.buffer(), 0, msgLen);
+        if (result > 0) {
+            replayAcceptedDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            applyOrderAcceptedEvent(replayAcceptedDecoder);
+        } else {
+            // TODO(POC): add back-pressure retry budget
+            log.warn()
+                    .append("[aggregate] failed to publish OrderAcceptedEvent orderId=").append(replayAcceptedDecoder.orderId())
+                    .append(" result=").append(result)
+                    .commit();
+        }
+    }
+
+    private void publishEvent(OrderRejectedEventEncoder eventEncoder) {
+        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderRejectedEventEncoder.BLOCK_LENGTH;
         final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
         if (result > 0) {
-            orders.put(orderId, new OrderState(
-                orderId, 0L, instrument, side, orderType, TimeInForce.DAY,
-                priceFixed8, qtyFixed8, OrderStatus.OPEN));
-            log.info()
-                .append("[aggregate] FIX PlaceOrder accepted orderId=").append(orderId)
-                .append(" symbol=").append(instrument)
-                .append(" qty=").append(qtyFixed8)
-                .append(" price=").append(priceFixed8)
-                .commit();
+            rejectedDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            applyOrderRejectedEvent(rejectedDecoder);
+        } else {
+            // TODO(POC): add back-pressure retry budget
+            log.warn()
+                    .append("[aggregate] failed to publish OrderRejectedEvent orderId=").append(rejectedDecoder.orderId())
+                    .commit();
+        }
+    }
+
+    private void publishEvent(CancelRejectedEventEncoder eventEncoder) {
+        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + CancelRejectedEventEncoder.BLOCK_LENGTH;
+        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
+        if (result > 0) {
+            cancelRejDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            applyCancelRejectedEvent(cancelRejDecoder);
         } else {
             log.warn()
-                .append("[aggregate] failed to publish OrderAcceptedEvent for PlaceOrder orderId=").append(orderId)
-                .append(" result=").append(result)
-                .commit();
+                    .append("[aggregate] failed to publish CancelRejectedEvent orderId=").append(cancelRejDecoder.orderId())
+                    .commit();
         }
+    }
+
+    private void publishEvent(OrderCancelledEventEncoder eventEncoder) {
+        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderCancelledEventEncoder.BLOCK_LENGTH;
+        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
+        if (result > 0) {
+            cancelledDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            applyOrderCancelledEvent(cancelledDecoder);
+        } else {
+            // TODO(POC): add back-pressure retry budget
+            log.warn()
+                    .append("[aggregate] failed to publish OrderCancelledEvent orderId=").append(cancelledDecoder.orderId())
+                    .append(" result=").append(result)
+                    .commit();
+        }
+    }
+
+    private void publishEvent(OrderAmendedEventEncoder eventEncoder) {
+        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderAmendedEventEncoder.BLOCK_LENGTH;
+        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
+        if (result > 0) {
+            amendedDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+        } else {
+            // TODO(POC): add back-pressure retry budget
+            log.warn()
+                    .append("[aggregate] failed to publish OrderAmendedEvent orderId=").append(amendedDecoder.orderId())
+                    .append(" result=").append(result)
+                    .commit();
+        }
+    }
+
+    // ── Event handlers ──────────────────────────────────────────────────────
+
+    @Override
+    public void applyOrderAcceptedEvent(OrderAcceptedEventDecoder eventDecoder) {
+        final long orderId = eventDecoder.orderId();
+        orders.put(orderId, new OrderState(
+                orderId,
+                eventDecoder.accountId(),
+                eventDecoder.instrument(),
+                eventDecoder.side(),
+                eventDecoder.orderType(),
+                eventDecoder.timeInForce(),
+                eventDecoder.price(),
+                eventDecoder.quantity(),
+                OrderStatus.OPEN));
+
+        log.info()
+                .append("[order-aggregate] order accepted orderId=").append(orderId)
+                .append(" symbol=").append(eventDecoder.instrument())
+                .append(" qty=").append(eventDecoder.quantity())
+                .append(" price=").append(eventDecoder.price())
+                .commit();
+    }
+
+    @Override
+    public void applyOrderRejectedEvent(OrderRejectedEventDecoder eventDecoder) {
+        log.info()
+                .append("[order-aggregate] rejected orderId=").append(eventDecoder.orderId())
+                .append(" reason=").append(eventDecoder.rejectReason().name())
+                .commit();
+    }
+
+    @Override
+    public void applyCancelRejectedEvent(CancelRejectedEventDecoder eventDecoder) {
+        log.info()
+                .append("[aggregate] cancel rejected orderId=").append(cancelRejDecoder.orderId())
+                .append(" reason=").append(cancelRejDecoder.rejectReason().name())
+                .commit();
+    }
+
+    @Override
+    public void applyOrderCancelledEvent(OrderCancelledEventDecoder eventDecoder) {
+        final OrderState state = orders.get(eventDecoder.orderId());
+        state.status = OrderStatus.CANCELLED;
+        log.info()
+                .append("[aggregate] cancelled orderId=").append(eventDecoder.orderId())
+                .append(" → CANCELLED")
+                .commit();
+    }
+
+    @Override
+    public void applyOrderAmmendedEvent(OrderAmendedEventDecoder eventDecoder) {
+        final OrderState state = orders.get(amendedDecoder.orderId());
+        state.currentPrice    = amendedDecoder.newPrice();
+        state.currentQuantity = amendedDecoder.newQuantity();
+        log.info()
+                .append("[aggregate] amended orderId=").append(amendedDecoder.orderId())
+                .append(" newPrice=").append(amendedDecoder.newPrice())
+                .append(" newQty=").append(amendedDecoder.newQuantity())
+                .commit();
     }
 
     /**
@@ -592,53 +694,6 @@ public class OrderAggregateAgent implements Agent {
             long result = mantissa;
             for (int i = 0; i < -shift; i++) result /= 10;
             return result;
-        }
-    }
-
-    // ── Event publishers ──────────────────────────────────────────────────────
-
-    private void publishReject(long orderId, long accountId, long correlationId, RejectReason reason) {
-        rejectedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
-                .sequenceNumber(0)
-                .timestamp(System.nanoTime())
-                .correlationId(correlationId)
-                .orderId(orderId)
-                .accountId(accountId)
-                .rejectReason(reason);
-
-        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderRejectedEventEncoder.BLOCK_LENGTH;
-        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
-        if (result > 0) {
-            log.info()
-                .append("[aggregate] rejected orderId=").append(orderId)
-                .append(" reason=").append(reason.name())
-                .commit();
-        } else {
-            log.warn()
-                .append("[aggregate] failed to publish OrderRejectedEvent orderId=").append(orderId)
-                .commit();
-        }
-    }
-
-    private void publishCancelRejected(long orderId, long correlationId, RejectReason reason) {
-        cancelRejEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
-                .sequenceNumber(0)
-                .timestamp(System.nanoTime())
-                .correlationId(correlationId)
-                .orderId(orderId)
-                .rejectReason(reason);
-
-        final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + CancelRejectedEventEncoder.BLOCK_LENGTH;
-        final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
-        if (result > 0) {
-            log.info()
-                .append("[aggregate] cancel rejected orderId=").append(orderId)
-                .append(" reason=").append(reason.name())
-                .commit();
-        } else {
-            log.warn()
-                .append("[aggregate] failed to publish CancelRejectedEvent orderId=").append(orderId)
-                .commit();
         }
     }
 }
