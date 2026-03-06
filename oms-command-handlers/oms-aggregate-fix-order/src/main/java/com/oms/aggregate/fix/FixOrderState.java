@@ -11,10 +11,10 @@ package com.oms.aggregate.fix;
 public final class FixOrderState
 {
     public final String clOrdId;
-    public final long   sessionId;
+    public long sessionId;
     public FixOrdStatus status;
 
-    public FixOrderState(final String clOrdId, final long sessionId, final FixOrdStatus status)
+    public FixOrderState(final String clOrdId, long sessionId, final FixOrdStatus status)
     {
         this.clOrdId   = clOrdId;
         this.sessionId = sessionId;
@@ -24,7 +24,7 @@ public final class FixOrderState
     @Override
     public String toString()
     {
-        return "FixOrderState{clOrdId='" + clOrdId + "', sessionId=" + sessionId
+        return "FixOrderState{clOrdId='" + clOrdId+ ", sessionId=" + sessionId
             + ", status=" + status + '}';
     }
 }

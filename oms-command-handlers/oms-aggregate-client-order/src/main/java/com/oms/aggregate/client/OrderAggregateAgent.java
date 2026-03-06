@@ -2,7 +2,7 @@ package com.oms.aggregate.client;
 
 import com.epam.deltix.gflog.api.Log;
 import com.epam.deltix.gflog.api.LogFactory;
-import com.oms.common.util.Decimal64Util;
+import com.oms.common.Decimal64Util;
 import com.oms.sbe.*;
 import com.oms.common.OmsStreams;
 import io.aeron.Aeron;
@@ -34,7 +34,6 @@ import java.util.Map;
  *            Size term buffer based on max replay duration × msg rate.
  */
 public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agent {
-
     private static final Log log = LogFactory.getLog(OrderAggregateAgent.class);
 
     private static final int  AGGREGATE_REPLAY_STREAM_ID = 20;
@@ -58,12 +57,12 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
     private final OrderAcceptedEventEncoder  acceptedEncoder   = new OrderAcceptedEventEncoder();
     private final OrderRejectedEventEncoder  rejectedEncoder   = new OrderRejectedEventEncoder();
     private final OrderRejectedEventDecoder rejectedDecoder   = new OrderRejectedEventDecoder();
-    private final OrderCancelledEventEncoder cancelledEncoder  = new OrderCancelledEventEncoder();
-    private final OrderCancelledEventDecoder cancelledDecoder  = new OrderCancelledEventDecoder();
-    private final OrderAmendedEventEncoder   amendedEncoder    = new OrderAmendedEventEncoder();
-    private final OrderAmendedEventDecoder   amendedDecoder    = new OrderAmendedEventDecoder();
-    private final CancelRejectedEventEncoder cancelRejEncoder  = new CancelRejectedEventEncoder();
-    private final CancelRejectedEventDecoder cancelRejDecoder  = new CancelRejectedEventDecoder();
+    private final OrderCancelledEventEncoder orderCancelledEncoder = new OrderCancelledEventEncoder();
+    private final OrderCancelledEventDecoder orderCancelledDecoder = new OrderCancelledEventDecoder();
+    private final OrderAmendedEventEncoder orderAmendedEncoder = new OrderAmendedEventEncoder();
+    private final OrderAmendedEventDecoder orderAmendedDecoder = new OrderAmendedEventDecoder();
+    private final CancelRejectedEventEncoder cancelRejectedEncoder = new CancelRejectedEventEncoder();
+    private final CancelRejectedEventDecoder cancelRejectedDecoder = new CancelRejectedEventDecoder();
 
     // Pre-allocated replay decoders — reused across all replayed messages
     private final OrderAcceptedEventDecoder  replayAcceptedDecoder  = new OrderAcceptedEventDecoder();
@@ -115,7 +114,7 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
         final long[] foundStopPosition = {AeronArchive.NULL_POSITION};
 
         final int found = archive.listRecordingsForUri(
-                0, 1, OmsStreams.IPC, OmsStreams.EVENT_STREAM,
+                0, 1, OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM,
                 (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                  startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                  mtuLength, sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {
@@ -195,16 +194,16 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
                 applyOrderRejectedEvent(rejectedDecoder);
             }
             case CancelRejectedEventDecoder.TEMPLATE_ID -> {
-                cancelRejDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-                applyCancelRejectedEvent(cancelRejDecoder);
+                cancelRejectedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                applyCancelRejectedEvent(cancelRejectedDecoder);
             }
             case OrderCancelledEventDecoder.TEMPLATE_ID -> {
                 replayCancelledDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
                 applyOrderCancelledEvent(replayCancelledDecoder);
             }
             case OrderAmendedEventDecoder.TEMPLATE_ID -> {
-                amendedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-                applyOrderAmmendedEvent(amendedDecoder);
+                orderAmendedDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+                applyOrderAmmendedEvent(orderAmendedDecoder);
             }
 
 //            case OrderFilledEventDecoder.TEMPLATE_ID -> {
@@ -228,16 +227,19 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
 
     // ── Command stream handler ────────────────────────────────────────────────
 
-    private void onCommandFragment(DirectBuffer buffer, int offset, int length, Header header) {
+    private void onCommandFragment(DirectBuffer buffer, final int offset, final int length, Header header) {
         headerDecoder.wrap(buffer, offset);
         final int templateId = headerDecoder.templateId();
 
         if (templateId == NewOrderCommandDecoder.TEMPLATE_ID) {
-            handleNewOrder(buffer, offset);
+            cmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+            handleNewOrder(cmdDecoder);
         } else if (templateId == CancelOrderCommandDecoder.TEMPLATE_ID) {
-            handleCancelOrder(buffer, offset);
+            cancelCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+            handleCancelOrder(cancelCmdDecoder);
         } else if (templateId == AmendOrderCommandDecoder.TEMPLATE_ID) {
-            handleAmendOrder(buffer, offset);
+            amendCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+            handleAmendOrder(amendCmdDecoder);
         }
     }
 
@@ -275,23 +277,17 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
 //    }
 
     // ── Command handlers ──────────────────────────────────────────────────────
-    private void handleNewOrder(DirectBuffer buffer, int offset) {
-        // wrapAndApplyHeader re-wraps headerDecoder and positions the body decoder
-        cmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-        handleNewOrder(cmdDecoder);
-    }
-
     @Override
-    public void handleNewOrder(NewOrderCommandDecoder cmdDecoder) {
-        final long orderId       = cmdDecoder.orderId();
-        final long accountId     = cmdDecoder.accountId();
-        final long correlationId = cmdDecoder.correlationId();
+    public void handleNewOrder(NewOrderCommandDecoder newOrder) {
+        final long orderId       = newOrder.orderId();
+        final long accountId     = newOrder.accountId();
+        final long correlationId = newOrder.correlationId();
 
         // Accept path — copy all fields from command into the event
-        final String instrument   = cmdDecoder.instrument();
-        final Side side           = cmdDecoder.side();
-        final OrderType orderType = cmdDecoder.orderType();
-        final TimeInForce tif     = cmdDecoder.timeInForce();
+        final String instrument   = newOrder.symbol();
+        final SideEnum side           = newOrder.side();
+        final OrdTypeEnum orderType = newOrder.ordType();
+        final TimeInForceEnum tif     = newOrder.timeInForce();
 
         newOrderReceivedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
                 .sequenceNumber(0)   // Sequencer overwrites this
@@ -299,23 +295,23 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
                 .correlationId(correlationId)
                 .orderId(orderId)
                 .accountId(accountId)
-                .instrument(instrument)
+                .symbol(instrument)
                 .side(side)
-                .orderType(orderType)
+                .ordType(orderType)
                 .timeInForce(tif);
-        newOrderReceivedEncoder.price().mantissa(cmdDecoder.price().mantissa()).exponent(cmdDecoder.price().exponent());
-        newOrderReceivedEncoder.quantity().mantissa(cmdDecoder.quantity().mantissa()).exponent(cmdDecoder.quantity().exponent());
+        newOrderReceivedEncoder.price().mantissa(newOrder.price().mantissa()).exponent(newOrder.price().exponent());
+        newOrderReceivedEncoder.orderQty().mantissa(newOrder.orderQty().mantissa()).exponent(newOrder.orderQty().exponent());
 
         // Validation — reject path
-        RejectReason rejectReason = null;
-        if (cmdDecoder.price().mantissa() <= 0) {
-            rejectReason = RejectReason.INVALID_PRICE;
+        RejectReasonEnum rejectReason = null;
+        if (newOrder.price().mantissa() <= 0) {
+            rejectReason = RejectReasonEnum.INVALID_PRICE;
         }
-        else if (cmdDecoder.quantity().mantissa() <= 0) {
-            rejectReason = RejectReason.INVALID_QUANTITY;
+        else if (newOrder.orderQty().mantissa() <= 0) {
+            rejectReason = RejectReasonEnum.INVALID_QUANTITY;
         }
         else if (orders.containsKey(orderId)) {
-            rejectReason = RejectReason.DUPLICATE_ORDER;
+            rejectReason = RejectReasonEnum.DUPLICATE_ORDER;
         }
 
         if (rejectReason != null) {
@@ -344,20 +340,19 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
                 .side(side)
                 .orderType(orderType)
                 .timeInForce(tif);
-        acceptedEncoder.price().mantissa(cmdDecoder.price().mantissa()).exponent(cmdDecoder.price().exponent());
-        acceptedEncoder.quantity().mantissa(cmdDecoder.quantity().mantissa()).exponent(cmdDecoder.quantity().exponent());
+        acceptedEncoder.price().mantissa(newOrder.price().mantissa()).exponent(newOrder.price().exponent());
+        acceptedEncoder.quantity().mantissa(newOrder.orderQty().mantissa()).exponent(newOrder.orderQty().exponent());
 
 
         publishEvent(acceptedEncoder);
     }
 
-    private void handleCancelOrder(DirectBuffer buffer, int offset) {
-        cancelCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
-
-        final long orderId       = cancelCmdDecoder.orderId();
-        final long accountId     = cancelCmdDecoder.accountId();
-        final long correlationId = cancelCmdDecoder.correlationId();
-        final CancelReason reason = cancelCmdDecoder.cancelReason();
+    @Override
+    public void handleCancelOrder(CancelOrderCommandDecoder cxlOrder) {
+        final long orderId       = cxlOrder.orderId();
+        final long accountId     = cxlOrder.accountId();
+        final long correlationId = cxlOrder.correlationId();
+        final CancelReasonEnum reason = cxlOrder.cancelReason();
 
         final OrderState state = orders.get(orderId);
         if (state == null) {
@@ -372,19 +367,19 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
                 || state.status == OrderStatus.CANCELLED
                 || state.status == OrderStatus.REJECTED) {
             // TODO(POC): add ORDER_ALREADY_FILLED / ORDER_ALREADY_CANCELLED reason to RejectReason schema
-            cancelRejEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+            cancelRejectedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
                     .sequenceNumber(0)
                     .timestamp(System.nanoTime())
                     .correlationId(correlationId)
                     .orderId(orderId)
-                    .rejectReason(RejectReason.RISK_BREACH);
+                    .rejectReason(RejectReasonEnum.RISK_BREACH);
 
-            publishEvent(cancelRejEncoder);
+            publishEvent(cancelRejectedEncoder);
             return;
         }
 
         // OPEN or PARTIALLY_FILLED — allow cancel
-        cancelledEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+        orderCancelledEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
                 .sequenceNumber(0)
                 .timestamp(System.nanoTime())
                 .correlationId(correlationId)
@@ -392,17 +387,17 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
                 .accountId(accountId)
                 .cancelReason(reason);
 
-        publishEvent(cancelledEncoder);
+        publishEvent(orderCancelledEncoder);
     }
 
-    private void handleAmendOrder(DirectBuffer buffer, int offset) {
-        amendCmdDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
+    @Override
+    public void handleAmendOrder(AmendOrderCommandDecoder amendOrder) {
 
-        final long orderId       = amendCmdDecoder.orderId();
-        final long accountId     = amendCmdDecoder.accountId();
-        final long correlationId = amendCmdDecoder.correlationId();
-        final long newPrice      = amendCmdDecoder.newPrice();
-        final long newQuantity   = amendCmdDecoder.newQuantity();
+        final long orderId       = amendOrder.orderId();
+        final long accountId     = amendOrder.accountId();
+        final long correlationId = amendOrder.correlationId();
+        final long newPrice      = amendOrder.newPrice();
+        final long newQuantity   = amendOrder.newQuantity();
 
         final OrderState state = orders.get(orderId);
         if (state == null) {
@@ -437,7 +432,7 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
             return;
         }
 
-        amendedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
+        orderAmendedEncoder.wrapAndApplyHeader(encodingBuffer, 0, headerEncoder)
                 .sequenceNumber(0)
                 .timestamp(System.nanoTime())
                 .correlationId(correlationId)
@@ -446,7 +441,7 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
                 .newPrice(newPrice)
                 .newQuantity(newQuantity);
 
-        publishEvent(amendedEncoder);
+        publishEvent(orderAmendedEncoder);
     }
 
     // ── Event publishers ──────────────────────────────────────────────────────
@@ -499,11 +494,11 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
         final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + CancelRejectedEventEncoder.BLOCK_LENGTH;
         final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
         if (result > 0) {
-            cancelRejDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
-            applyCancelRejectedEvent(cancelRejDecoder);
+            cancelRejectedDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            applyCancelRejectedEvent(cancelRejectedDecoder);
         } else {
             log.warn()
-                    .append("[aggregate] failed to publish CancelRejectedEvent orderId=").append(cancelRejDecoder.orderId())
+                    .append("[aggregate] failed to publish CancelRejectedEvent orderId=").append(cancelRejectedDecoder.orderId())
                     .commit();
         }
     }
@@ -512,12 +507,12 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
         final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderCancelledEventEncoder.BLOCK_LENGTH;
         final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
         if (result > 0) {
-            cancelledDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
-            applyOrderCancelledEvent(cancelledDecoder);
+            orderCancelledDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            applyOrderCancelledEvent(orderCancelledDecoder);
         } else {
             // TODO(POC): add back-pressure retry budget
             log.warn()
-                    .append("[aggregate] failed to publish OrderCancelledEvent orderId=").append(cancelledDecoder.orderId())
+                    .append("[aggregate] failed to publish OrderCancelledEvent orderId=").append(orderCancelledDecoder.orderId())
                     .append(" result=").append(result)
                     .commit();
         }
@@ -527,11 +522,11 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
         final int msgLen = MessageHeaderEncoder.ENCODED_LENGTH + OrderAmendedEventEncoder.BLOCK_LENGTH;
         final long result = eventIngressPub.offer(encodingBuffer, 0, msgLen);
         if (result > 0) {
-            amendedDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
+            orderAmendedDecoder.wrapAndApplyHeader(eventEncoder.buffer(), 0, headerDecoder);
         } else {
             // TODO(POC): add back-pressure retry budget
             log.warn()
-                    .append("[aggregate] [").append(amendedDecoder.orderId())
+                    .append("[aggregate] [").append(orderAmendedDecoder.orderId())
                     .append(" result=").append(result)
                     .commit();
         }
@@ -542,14 +537,14 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
     @Override
     public void applyNewOrderReceivedEvent(NewOrderReceivedEventDecoder eventDecoder) {
         final long orderId = eventDecoder.orderId();
-        final long quantity = Decimal64Util.fromFixedPoint(eventDecoder.quantity());
+        final long quantity = Decimal64Util.fromFixedPoint(eventDecoder.orderQty());
         final long price = Decimal64Util.fromFixedPoint(eventDecoder.price());
         orders.put(orderId, new OrderState(
                 orderId,
                 eventDecoder.accountId(),
-                eventDecoder.instrument(),
+                eventDecoder.symbol(),
                 eventDecoder.side(),
-                eventDecoder.orderType(),
+                eventDecoder.ordType(),
                 eventDecoder.timeInForce(),
                 price,
                 quantity,
@@ -557,7 +552,7 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
 
         log.info()
                 .append("[order-aggregate] [").append(orderId)
-                .append("] New Order Received, symbol=").append(cmdDecoder.instrument())
+                .append("] New Order Received, symbol=").append(cmdDecoder.symbol())
                 .append(" qty=").append(quantity)
                 .append(" price=").append(price)
                 .commit();
@@ -606,13 +601,13 @@ public class OrderAggregateAgent implements OrderCommandApi, OrderEventApi, Agen
 
     @Override
     public void applyOrderAmmendedEvent(OrderAmendedEventDecoder eventDecoder) {
-        final OrderState state = orders.get(amendedDecoder.orderId());
-        state.currentPrice    = amendedDecoder.newPrice();
-        state.currentQuantity = amendedDecoder.newQuantity();
+        final OrderState state = orders.get(orderAmendedDecoder.orderId());
+        state.currentPrice    = orderAmendedDecoder.newPrice();
+        state.currentQuantity = orderAmendedDecoder.newQuantity();
         log.info()
-                .append("[aggregate] [").append(amendedDecoder.orderId())
-                .append("] newPrice=").append(amendedDecoder.newPrice())
-                .append(" newQty=").append(amendedDecoder.newQuantity())
+                .append("[aggregate] [").append(orderAmendedDecoder.orderId())
+                .append("] newPrice=").append(orderAmendedDecoder.newPrice())
+                .append(" newQty=").append(orderAmendedDecoder.newQuantity())
                 .commit();
     }
 }

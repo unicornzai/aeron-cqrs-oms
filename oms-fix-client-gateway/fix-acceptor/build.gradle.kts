@@ -4,7 +4,6 @@ plugins {
 
 dependencies {
     implementation(project(":oms-fix-client-gateway:fix-common"))
-    implementation(project(":oms-fix-client-gateway:fix-aggregate-agent"))
     implementation(project(":oms-command-handlers:oms-aggregate-fix-order"))
     implementation(project(":oms-common"))
     implementation(libs.artio.core)

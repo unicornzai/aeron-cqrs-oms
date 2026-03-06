@@ -4,6 +4,7 @@ dependencies {
     sbeCodegen(libs.sbe.tool)
     // SBE generated code references Agrona buffers — must be on compile classpath
     implementation(libs.agrona)
+    implementation(libs.dfp)
 }
 
 val sbeOutputDir = layout.buildDirectory.dir("generated/sources/sbe/main/java")

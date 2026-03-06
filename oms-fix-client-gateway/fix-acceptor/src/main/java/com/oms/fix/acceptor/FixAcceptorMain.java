@@ -4,7 +4,6 @@ import com.oms.common.OmsStreams;
 import com.oms.aggregate.fix.FixOrderAggregateAgent;
 import com.oms.aggregate.fix.FixOrderState;
 import com.oms.fix.sbe.MessageHeaderDecoder;
-import com.oms.sbe.NewOrderCommandDecoder;
 import io.aeron.Aeron;
 import io.aeron.Publication;
 import io.aeron.Subscription;
@@ -112,14 +111,15 @@ public class FixAcceptorMain
         final Aeron omsAeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(OMS_AERON_DIR));
 
         // Acceptor publishes NOS to COMMAND_INGRESS; OmsApp.SequencerAgent reads and stamps it.
-        final Publication commandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
-        final CommandStreamPublisher publisher = new CommandStreamPublisher(commandPub);
+        final Publication ingressCommandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.INGRESS_COMMAND_STREAM);
+        final CommandStreamPublisher publisher = new CommandStreamPublisher(ingressCommandPub);
 
         // FixOrderAggregateAgent reads from COMMAND_STREAM(1) — after OmsApp's sequencer has
         // stamped the NOS. It translates NOS→PlaceOrder and publishes back to COMMAND_INGRESS(10).
         // OmsApp must be running for messages to appear on COMMAND_STREAM(1).
-        final Subscription fixAggCommandSub   = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-        final Publication  internalCommandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        final Subscription sequencedCommandSub   = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.SEQUENCED_COMMAND_STREAM);
+//        final Publication  ingressCommandPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.INGRESS_COMMAND_STREAM);
+        final Publication ingressEventPub = omsAeron.addPublication(OmsStreams.IPC, OmsStreams.INGRESS_EVENT_STREAM);
 
         // ── Shared correlation maps ────────────────────────────────────────────
         // fixStateByOrderId: written by FixOrderAggregateAgent (agent thread),
@@ -130,19 +130,19 @@ public class FixAcceptorMain
         final ConcurrentHashMap<Long, Session>       activeSessions    = new ConcurrentHashMap<>();
 
         final FixOrderAggregateAgent fixAggAgent = new FixOrderAggregateAgent(
-            fixAggCommandSub, internalCommandPub, fixStateByOrderId);
+            sequencedCommandSub, ingressEventPub, fixStateByOrderId);
         final AgentRunner fixAggRunner = new AgentRunner(
             new YieldingIdleStrategy(), Throwable::printStackTrace, null, fixAggAgent);
         AgentRunner.startOnThread(fixAggRunner);
 
         // Subscribe to EVENT_STREAM(2) for FixExecReportBridge — polled on the main loop thread
         // (same thread as fixLibrary.poll()) to keep Artio session.trySend() single-threaded.
-        final Subscription eventStreamSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.EVENT_STREAM);
+        final Subscription eventStreamSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);
         final FixExecReportBridge execReportBridge = new FixExecReportBridge(fixStateByOrderId, activeSessions);
 
         // M7 verification — two independent check points on the shared OMS streams.
-        final Subscription         verifyNewOrderSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-        final Subscription         verifyEventSub      = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.EVENT_STREAM);
+        final Subscription         verifyNewOrderSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.SEQUENCED_COMMAND_STREAM);
+        final Subscription         verifyEventSub      = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);
         final MessageHeaderDecoder verifyHeaderDecoder = new MessageHeaderDecoder();
 
         // ── Step 3: Configure FixEngine with Artio's own archive ─────────────
@@ -189,7 +189,7 @@ public class FixAcceptorMain
         // Without this wait, the first NOS arrives before OmsApp is ready and is silently dropped.
         System.out.println("[Acceptor] Waiting for OmsApp commandIngress connection (stream 10)...");
         final long connectionDeadline = System.currentTimeMillis() + 30_000L;
-        while (!commandPub.isConnected() || !internalCommandPub.isConnected())
+        while (!ingressCommandPub.isConnected() || !ingressCommandPub.isConnected())
         {
             if (System.currentTimeMillis() > connectionDeadline)
             {
@@ -200,9 +200,9 @@ public class FixAcceptorMain
                 eventStreamSub.close();
                 verifyNewOrderSub.close();
                 verifyEventSub.close();
-                fixAggCommandSub.close();
-                internalCommandPub.close();
-                commandPub.close();
+                sequencedCommandSub.close();
+                ingressCommandPub.close();
+                ingressCommandPub.close();
                 omsAeron.close();
                 engine.close();
                 artioDriver.close();
@@ -222,9 +222,9 @@ public class FixAcceptorMain
             eventStreamSub.close();
             verifyNewOrderSub.close();
             verifyEventSub.close();
-            fixAggCommandSub.close();
-            internalCommandPub.close();
-            commandPub.close();
+            sequencedCommandSub.close();
+            ingressCommandPub.close();
+            ingressCommandPub.close();
             omsAeron.close();
             engine.close();
             artioDriver.close();

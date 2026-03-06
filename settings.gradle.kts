@@ -12,7 +12,6 @@ include(
     "oms-media-driver",
     "oms-fix-client-gateway:fix-common",
     "oms-fix-client-gateway:fix-acceptor",
-    "oms-fix-client-gateway:fix-aggregate-agent",
     "oms-fix-client-gateway:fix-client",
     "oms-command-handlers:oms-aggregate-fix-order",
     "oms-command-handlers:oms-aggregate-client-order"

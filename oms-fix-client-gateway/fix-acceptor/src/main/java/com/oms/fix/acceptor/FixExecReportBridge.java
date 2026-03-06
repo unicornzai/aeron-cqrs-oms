@@ -4,7 +4,7 @@ import com.oms.aggregate.fix.FixOrderState;
 import com.oms.sbe.MessageHeaderDecoder;
 import com.oms.sbe.OrderAcceptedEventDecoder;
 import com.oms.sbe.OrderRejectedEventDecoder;
-import com.oms.sbe.Side;
+import com.oms.sbe.SideEnum;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
@@ -95,7 +95,7 @@ public final class FixExecReportBridge implements FragmentHandler
         }
 
         // Map OMS Side enum → FIX 4.4 side char ('1'=BUY, '2'=SELL).
-        final char fixSide = event.side() == Side.BUY ? '1' : '2';
+        final char fixSide = event.side() == SideEnum.BUY ? '1' : '2';
 
         execReport.reset();
         // TODO(POC): use exchange-assigned orderID in production; for now reflect clOrdId so the client can correlate via SSE.

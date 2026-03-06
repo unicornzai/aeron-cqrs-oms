@@ -106,7 +106,7 @@ public class ViewServerReadModel implements Agent {
         final long[] foundStopPosition = {AeronArchive.NULL_POSITION};
 
         final int found = archive.listRecordingsForUri(
-                0, 1, OmsStreams.IPC, OmsStreams.EVENT_STREAM,
+                0, 1, OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM,
                 (controlSessionId, correlationId, recId, startTimestamp, stopTimestamp,
                  startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                  mtuLength, sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {

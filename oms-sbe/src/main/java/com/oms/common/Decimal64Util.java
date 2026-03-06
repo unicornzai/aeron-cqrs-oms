@@ -1,4 +1,4 @@
-package com.oms.common.util;
+package com.oms.common;
 
 import com.epam.deltix.dfp.Decimal64Utils;
 import com.oms.sbe.Decimal64Decoder;

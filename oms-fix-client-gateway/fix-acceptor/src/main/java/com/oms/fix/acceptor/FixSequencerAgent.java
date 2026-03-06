@@ -13,10 +13,10 @@ import java.nio.ByteOrder;
 /**
  * M4: Command-only sequencer for the FIX integration process.
  *
- * <p>Subscribes to the Command Ingress Stream (IPC stream {@value com.oms.common.OmsStreams#COMMAND_INGRESS_STREAM}),
+ * <p>Subscribes to the Command Ingress Stream (IPC stream {@value com.oms.common.OmsStreams#INGRESS_COMMAND_STREAM}),
  * stamps each message with a monotonically increasing {@code sequenceNumber} at the fixed
  * SBE header boundary (byte offset {@value SEQ_OFFSET}), then republishes to the
- * Sequenced Command Stream (IPC stream {@value com.oms.common.OmsStreams#COMMAND_STREAM}).
+ * Sequenced Command Stream (IPC stream {@value com.oms.common.OmsStreams#SEQUENCED_COMMAND_STREAM}).
  *
  * <p>Contains NO business logic — purely a sequencing pass-through. The sequenceNumber
  * field is the first field in every FIX SBE message body (immediately after the 8-byte

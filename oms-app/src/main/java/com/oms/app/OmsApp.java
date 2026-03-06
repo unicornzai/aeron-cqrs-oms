@@ -3,7 +3,7 @@ package com.oms.app;
 import com.oms.aggregate.client.OrderAggregateAgent;
 import com.oms.api.OrderQueryServer;
 import com.oms.common.OmsStreams;
-import com.oms.handlers.FillSimulatorHandler;
+import com.oms.handlers.FixOrderEventHandler;
 import com.oms.readmodel.db.DatabaseReadModelStub;
 import com.oms.readmodel.view.ViewServerReadModel;
 import com.oms.sequencer.SequencerAgent;
@@ -57,54 +57,54 @@ public class OmsApp {
         // Archive tracks by channel+streamId; re-calling creates a new recording segment
         // for each boot (previous boot's recording is preserved for replay).
         // TODO(POC): validate return subscriptionId > 0
-        archive.startRecording(OmsStreams.IPC, OmsStreams.COMMAND_STREAM, SourceLocation.LOCAL);
-        archive.startRecording(OmsStreams.IPC, OmsStreams.EVENT_STREAM,   SourceLocation.LOCAL);
+        archive.startRecording(OmsStreams.IPC, OmsStreams.SEQUENCED_COMMAND_STREAM, SourceLocation.LOCAL);
+        archive.startRecording(OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM,   SourceLocation.LOCAL);
 
         // ── 4. Sequencer channels ─────────────────────────────────────────────
-        final Subscription commandIngressSub = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
-        final Subscription eventIngressSub   = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.EVENT_INGRESS_STREAM);
-        final Publication commandStreamPub   = aeron.addPublication(
-                OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-        final Publication eventStreamPub     = aeron.addPublication(
-                OmsStreams.IPC, OmsStreams.EVENT_STREAM);
+        final Subscription ingressCommandSub = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.INGRESS_COMMAND_STREAM);
+        final Subscription ingressEventSub   = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.INGRESS_EVENT_STREAM);
+        final Publication sequencedCommandPub   = aeron.addPublication(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_COMMAND_STREAM);
+        final Publication sequencedEventPub     = aeron.addPublication(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);
 
         // ── 5. Component channels ─────────────────────────────────────────────
-        final Publication commandIngressPub  = aeron.addPublication(
-                OmsStreams.IPC, OmsStreams.COMMAND_INGRESS_STREAM);
+        final Publication ingressCommandPub1  = aeron.addPublication(
+                OmsStreams.IPC, OmsStreams.INGRESS_COMMAND_STREAM);
 
         // OrderAggregateAgent and FillSimulatorHandler each get their own Publication on
         // Event Ingress (StreamId 11). Aeron IPC allows multiple concurrent publishers.
-        final Publication eventIngressPub1   = aeron.addPublication(
-                OmsStreams.IPC, OmsStreams.EVENT_INGRESS_STREAM);  // used by OrderAggregateAgent
-        final Publication eventIngressPub2   = aeron.addPublication(
-                OmsStreams.IPC, OmsStreams.EVENT_INGRESS_STREAM);  // used by FillSimulatorHandler
+        final Publication ingressEventPub1   = aeron.addPublication(
+                OmsStreams.IPC, OmsStreams.INGRESS_EVENT_STREAM);  // used by OrderAggregateAgent
+        final Publication ingressEventPub2   = aeron.addPublication(
+                OmsStreams.IPC, OmsStreams.INGRESS_EVENT_STREAM);  // used by FillSimulatorHandler
 
         // Each downstream subscriber gets its own independent subscription position.
-        final Subscription commandStreamSub         = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
-        final Subscription eventStreamSubAggregate  = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // OrderAggregateAgent (observes fills)
-        final Subscription eventStreamSubFill        = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // FillSimulatorHandler
-        final Subscription eventStreamSubDb          = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // DatabaseReadModelStub
-        final Subscription eventStreamSubView        = aeron.addSubscription(
-                OmsStreams.IPC, OmsStreams.EVENT_STREAM);   // ViewServerReadModel
+        final Subscription sequencedCommandPub1         = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_COMMAND_STREAM);
+        final Subscription sequencedEventSub1  = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);   // OrderAggregateAgent (observes fills)
+        final Subscription sequencedEventSub2        = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);   // FillSimulatorHandler
+        final Subscription sequencedEventSub3          = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);   // DatabaseReadModelStub
+        final Subscription sequencedEventSub4        = aeron.addSubscription(
+                OmsStreams.IPC, OmsStreams.SEQUENCED_EVENT_STREAM);   // ViewServerReadModel
 
         // ── 6. Agents ─────────────────────────────────────────────────────────
         final SequencerAgent        sequencer  = new SequencerAgent(
-                commandIngressSub, eventIngressSub, commandStreamPub, eventStreamPub);
+                ingressCommandSub, ingressEventSub, sequencedCommandPub, sequencedEventPub);
 //        final OrderIngressAgent     ingress    = new OrderIngressAgent(commandIngressPub);
         // Aggregate replays the Event Stream on startup to rebuild in-memory order state.
         // TODO(POC): size term buffer based on max replay duration × msg rate
         final OrderAggregateAgent   aggregate  = new OrderAggregateAgent(
-                commandStreamSub, eventIngressPub1, eventStreamSubAggregate, aeron, archive);
-        final FillSimulatorHandler  fillSim    = new FillSimulatorHandler(eventStreamSubFill, eventIngressPub2);
-        final DatabaseReadModelStub dbModel    = new DatabaseReadModelStub(eventStreamSubDb);
+                sequencedCommandPub1, ingressEventPub1, sequencedEventSub1, aeron, archive);
+        final FixOrderEventHandler fixOrderEventHandler    = new FixOrderEventHandler(sequencedEventSub2, ingressCommandPub1);
+        final DatabaseReadModelStub dbModel    = new DatabaseReadModelStub(sequencedEventSub3);
         final ViewServerReadModel   viewModel  = new ViewServerReadModel(
-                eventStreamSubView, aeron, archive);
+                sequencedEventSub4, aeron, archive);
 
         // ── M5: Query server (port 8081) ──────────────────────────────────────
         // Listener registered BEFORE startOnThread() — no updates can be missed.
@@ -119,7 +119,7 @@ public class OmsApp {
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, sequencer),
 //                new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, ingress),
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, aggregate),
-                new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, fillSim),
+                new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, fixOrderEventHandler),
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, dbModel),
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, viewModel)
         );

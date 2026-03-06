@@ -3,8 +3,8 @@ package com.oms.aggregate.fix;
 import com.oms.fix.sbe.*;
 import com.oms.sbe.MessageHeaderEncoder;
 import com.oms.sbe.NewOrderCommandEncoder;
-import com.oms.sbe.OrderType;
-import com.oms.sbe.Side;
+import com.oms.sbe.SideEnum;
+import com.oms.sbe.OrdTypeEnum;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -16,7 +16,7 @@ import org.agrona.concurrent.UnsafeBuffer;
  * offset 0; the returned {@code int} is the total encoded byte length to offer.
  *
  * <p>The {@code sequenceNumber} field is set to 0 in every emitted message;
- * {@link com.oms.fix.acceptor.FixSequencerAgent} overwrites it when the message
+ *  overwrites it when the message
  * re-enters stream 10 and is re-published to stream 1.
  */
 public final class FixCommandTranslator
@@ -49,18 +49,17 @@ public final class FixCommandTranslator
      * @param orderId internal orderId allocated by the caller via {@link #nextOrderId()}
      * @return total encoded length (header + block), suitable for {@code Publication.offer()}
      */
-    public int translate(final NewOrderSingleCommandDecoder nos,
+    public int translate(final FixNewOrderSingleCommandDecoder nos,
                          final UnsafeBuffer outBuf,
                          final long orderId)
     {
         cmdEncoder.wrapAndApplyHeader(outBuf, 0, headerEncoder);
 
-        cmdEncoder
-            .sequenceNumber(0L)               // stamped by OmsApp.SequencerAgent
+        cmdEncoder.sequenceNumber(0L)               // stamped by OmsApp.SequencerAgent
             .orderId(orderId)
-            .instrument(nos.symbol())             // String copy — POC acceptable
-            .side(nos.side() == SideEnum.BUY ? Side.BUY : Side.SELL)
-            .orderType(nos.ordType() == OrdTypeEnum.LIMIT ? OrderType.LIMIT : OrderType.MARKET);
+            .symbol(nos.symbol())             // String copy — POC acceptable
+            .side(nos.side() == com.oms.fix.sbe.SideEnum.BUY ? SideEnum.BUY : SideEnum.SELL)
+            .ordType(nos.ordType() == com.oms.fix.sbe.OrdTypeEnum.LIMIT ? OrdTypeEnum.LIMIT : OrdTypeEnum.MARKET);
 
         // Pass Decimal64 mantissa+exponent through unchanged — no re-scaling needed
         // because FixSessionHandler already encodes price/qty with exponent=-scale().
@@ -68,7 +67,7 @@ public final class FixCommandTranslator
             .mantissa(nos.price().mantissa())
             .exponent(nos.price().exponent());
 
-        cmdEncoder.quantity()
+        cmdEncoder.orderQty()
             .mantissa(nos.orderQty().mantissa())
             .exponent(nos.orderQty().exponent());
 

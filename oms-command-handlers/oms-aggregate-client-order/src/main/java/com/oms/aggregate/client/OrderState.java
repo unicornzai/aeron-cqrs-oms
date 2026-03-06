@@ -1,8 +1,8 @@
 package com.oms.aggregate.client;
 
-import com.oms.sbe.OrderType;
-import com.oms.sbe.Side;
-import com.oms.sbe.TimeInForce;
+import com.oms.sbe.OrdTypeEnum;
+import com.oms.sbe.SideEnum;
+import com.oms.sbe.TimeInForceEnum;
 
 /**
  * Mutable in-memory state for a single order, owned by the OrderAggregateAgent thread.
@@ -13,9 +13,9 @@ public class OrderState {
     public final long orderId;
     public final long accountId;
     public final String instrument;
-    public final Side side;
-    public final OrderType orderType;
-    public final TimeInForce timeInForce;
+    public final SideEnum side;
+    public final OrdTypeEnum orderType;
+    public final TimeInForceEnum timeInForce;
     public final long price;
     public final long quantity;
     // Mutable — transitions as events are applied
@@ -26,7 +26,7 @@ public class OrderState {
 
     public OrderState(
             long orderId, long accountId, String instrument,
-            Side side, OrderType orderType, TimeInForce timeInForce,
+            SideEnum side, OrdTypeEnum orderType, TimeInForceEnum timeInForce,
             long price, long quantity, OrderStatus status) {
         this.orderId         = orderId;
         this.accountId       = accountId;

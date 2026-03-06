@@ -16,19 +16,19 @@ public final class OmsStreams {
     // Written by external components; read exclusively by the Sequencer.
 
     /** New/amend/cancel commands from Order Ingress → Sequencer. */
-    public static final int COMMAND_INGRESS_STREAM = 10;
+    public static final int INGRESS_COMMAND_STREAM = 10;
 
     /** Domain events from OrderAggregate & EventHandlers → Sequencer. */
-    public static final int EVENT_INGRESS_STREAM   = 11;
+    public static final int INGRESS_EVENT_STREAM = 11;
 
     // ── Canonical sequenced streams ─────────────────────────────────────────
     // Written ONLY by the Sequencer; all other components are read-only subscribers.
 
     /** Sequenced command stream (StreamId 1) — read by OrderAggregate. */
-    public static final int COMMAND_STREAM = 1;
+    public static final int SEQUENCED_COMMAND_STREAM = 1;
 
     /** Sequenced event stream (StreamId 2) — read by EventHandlers and ReadModels. */
-    public static final int EVENT_STREAM   = 2;
+    public static final int SEQUENCED_EVENT_STREAM = 2;
 
     private OmsStreams() {}
 }

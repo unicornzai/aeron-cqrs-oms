@@ -24,7 +24,7 @@ public final class FixSessionHandler implements SessionHandler
 {
     // SBE encoded length: 8 (MessageHeader) + 120 (block) = 128 bytes
     private static final int SBE_ENCODED_LENGTH =
-        MessageHeaderEncoder.ENCODED_LENGTH + NewOrderSingleCommandEncoder.BLOCK_LENGTH;
+        MessageHeaderEncoder.ENCODED_LENGTH + FixNewOrderSingleCommandEncoder.BLOCK_LENGTH;
 
     private final CommandStreamPublisher publisher;
     private final ConcurrentHashMap<Long, Session> activeSessions;
@@ -36,7 +36,7 @@ public final class FixSessionHandler implements SessionHandler
 
     // SBE encoder — reuse per-instance
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
-    private final NewOrderSingleCommandEncoder sbeEncoder = new NewOrderSingleCommandEncoder();
+    private final FixNewOrderSingleCommandEncoder sbeEncoder = new FixNewOrderSingleCommandEncoder();
     private final UnsafeBuffer sendBuffer =
         new UnsafeBuffer(ByteBuffer.allocateDirect(SBE_ENCODED_LENGTH));
 
