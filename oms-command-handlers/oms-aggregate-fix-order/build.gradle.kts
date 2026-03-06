@@ -4,4 +4,5 @@ dependencies {
     implementation(libs.aeron.client)
     implementation(libs.agrona)
     implementation(libs.gflog.api)
+    implementation(libs.dfp)
 }

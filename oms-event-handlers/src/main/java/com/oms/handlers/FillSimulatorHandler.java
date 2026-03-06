@@ -81,9 +81,9 @@ public class FillSimulatorHandler implements Agent {
         final int templateId = headerDecoder.templateId();
 
         if (templateId == OrderAcceptedEventDecoder.TEMPLATE_ID) {
-            handleOrderAccepted(buffer, offset);
+           // handleOrderAccepted(buffer, offset);
         } else if (templateId == OrderCancelledEventDecoder.TEMPLATE_ID) {
-            handleOrderCancelled(buffer, offset);
+           // handleOrderCancelled(buffer, offset);
         }
         // Other event types intentionally ignored here
     }
@@ -94,8 +94,8 @@ public class FillSimulatorHandler implements Agent {
         final long orderId       = acceptedDecoder.orderId();
         final long accountId     = acceptedDecoder.accountId();
         final long correlationId = acceptedDecoder.correlationId();
-        final long price         = acceptedDecoder.price();
-        final long totalQty      = acceptedDecoder.quantity();
+        final long price         = 0L;//acceptedDecoder.price();
+        final long totalQty      = 0L;//acceptedDecoder.quantity();
 
         pendingFills.put(orderId, new PendingFill(orderId, accountId, correlationId, price, totalQty, 0L));
         log.info()

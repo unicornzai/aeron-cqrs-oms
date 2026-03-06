@@ -19,6 +19,11 @@
         <type name="quantity"        primitiveType="int64"/>  <!-- quantity × 10^8 fixed point -->
         <type name="correlationId"   primitiveType="int64"/>
 
+        <composite name="Decimal64" description="Signed decimal: value = mantissa × 10^exponent">
+            <type name="mantissa"  primitiveType="int64"/>
+            <type name="exponent"  primitiveType="int8"/>
+        </composite>
+
         <enum name="Side" encodingType="uint8">
             <validValue name="BUY">0</validValue>
             <validValue name="SELL">1</validValue>
@@ -78,8 +83,8 @@
         <field name="side"            id="7"  type="Side"/>
         <field name="orderType"       id="8"  type="OrderType"/>
         <field name="timeInForce"     id="9"  type="TimeInForce"/>
-        <field name="price"           id="10" type="price"/>
-        <field name="quantity"        id="11" type="quantity"/>
+        <field name="price"           id="10" type="Decimal64"/>
+        <field name="quantity"        id="11" type="Decimal64"/>
     </sbe:message>
 
     <sbe:message name="CancelOrderCommand" id="2"
@@ -107,7 +112,22 @@
     <!-- EVENTS  (templateId 100–199)               -->
     <!-- ═══════════════════════════════════════════ -->
 
-    <sbe:message name="OrderAcceptedEvent" id="100"
+    <sbe:message name="NewOrderReceivedEvent" id="100"
+                 description="New order has been received">
+        <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
+        <field name="timestamp"       id="2"  type="timestamp"/>
+        <field name="correlationId"   id="3"  type="correlationId"/>
+        <field name="orderId"         id="4"  type="orderId"/>
+        <field name="accountId"       id="5"  type="accountId"/>
+        <field name="instrument"      id="6"  type="instrument"/>
+        <field name="side"            id="7"  type="Side"/>
+        <field name="orderType"       id="8"  type="OrderType"/>
+        <field name="timeInForce"     id="9"  type="TimeInForce"/>
+        <field name="price"           id="10" type="Decimal64"/>
+        <field name="quantity"        id="11" type="Decimal64"/>
+    </sbe:message>
+
+    <sbe:message name="OrderAcceptedEvent" id="101"
                  description="Order passed validation and is now open">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>
@@ -118,11 +138,11 @@
         <field name="side"            id="7"  type="Side"/>
         <field name="orderType"       id="8"  type="OrderType"/>
         <field name="timeInForce"     id="9"  type="TimeInForce"/>
-        <field name="price"           id="10" type="price"/>
-        <field name="quantity"        id="11" type="quantity"/>
+        <field name="price"           id="10" type="Decimal64"/>
+        <field name="quantity"        id="11" type="Decimal64"/>
     </sbe:message>
 
-    <sbe:message name="OrderRejectedEvent" id="101"
+    <sbe:message name="OrderRejectedEvent" id="102"
                  description="Order failed validation or risk check">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>
@@ -132,7 +152,7 @@
         <field name="rejectReason"    id="6"  type="RejectReason"/>
     </sbe:message>
 
-    <sbe:message name="OrderCancelledEvent" id="102"
+    <sbe:message name="OrderCancelledEvent" id="103"
                  description="Order successfully cancelled">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>
@@ -142,7 +162,7 @@
         <field name="cancelReason"    id="6"  type="CancelReason"/>
     </sbe:message>
 
-    <sbe:message name="OrderAmendedEvent" id="103"
+    <sbe:message name="OrderAmendedEvent" id="104"
                  description="Order price or quantity successfully amended">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>
@@ -153,7 +173,7 @@
         <field name="newQuantity"     id="7"  type="quantity"/>
     </sbe:message>
 
-    <sbe:message name="OrderFilledEvent" id="104"
+    <sbe:message name="OrderFilledEvent" id="105"
                  description="Order fully filled">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>
@@ -164,7 +184,7 @@
         <field name="fillQuantity"    id="7"  type="quantity"/>
     </sbe:message>
 
-    <sbe:message name="OrderPartiallyFilledEvent" id="105"
+    <sbe:message name="OrderPartiallyFilledEvent" id="106"
                  description="Order partially filled, remainder open">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>
@@ -176,7 +196,7 @@
         <field name="remainingQty"    id="8"  type="quantity"/>
     </sbe:message>
 
-    <sbe:message name="CancelRejectedEvent" id="106"
+    <sbe:message name="CancelRejectedEvent" id="107"
                  description="Cancel request rejected (e.g. order already filled)">
         <field name="sequenceNumber"  id="1"  type="sequenceNumber"/>
         <field name="timestamp"       id="2"  type="timestamp"/>

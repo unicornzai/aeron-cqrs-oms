@@ -5,7 +5,6 @@ plugins {
 dependencies {
     implementation(project(":oms-common"))
     implementation(project(":oms-sequencer"))
-    implementation(project(":oms-ingress"))
     implementation(project(":oms-command-handlers:oms-aggregate-client-order"))
     implementation(project(":oms-command-handlers:oms-aggregate-fix-order"))
     implementation(project(":oms-event-handlers"))

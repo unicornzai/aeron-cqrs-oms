@@ -2,7 +2,6 @@ package com.oms.aggregate.fix;
 
 import com.oms.fix.sbe.MessageHeaderDecoder;
 import com.oms.fix.sbe.NewOrderSingleCommandDecoder;
-import com.oms.fix.sbe.PlaceOrderCommandDecoder;
 import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.Header;
@@ -106,10 +105,6 @@ public final class FixOrderAggregateAgent implements Agent
         {
             nosDecoder.wrapAndApplyHeader(buffer, offset, headerDecoder);
             onNewOrderSingleCommand(nosDecoder);
-        }
-        else if (templateId == PlaceOrderCommandDecoder.TEMPLATE_ID)
-        {
-            // Own PlaceOrderCommand returning after sequencing — skip silently.
         }
         // else: unknown template, ignore
     }

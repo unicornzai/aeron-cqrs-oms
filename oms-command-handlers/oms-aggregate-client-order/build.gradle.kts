@@ -3,4 +3,5 @@ dependencies {
     implementation(project(":oms-fix-client-gateway:fix-common"))  // for PlaceOrderCommand (templateId=20)
     implementation(libs.aeron.client)
     implementation(libs.aeron.archive)
+    implementation(libs.dfp)
 }

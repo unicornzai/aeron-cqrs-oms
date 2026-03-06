@@ -1,8 +1,10 @@
 package com.oms.aggregate.fix;
 
-import com.oms.fix.sbe.MessageHeaderEncoder;
-import com.oms.fix.sbe.NewOrderSingleCommandDecoder;
-import com.oms.fix.sbe.PlaceOrderCommandEncoder;
+import com.oms.fix.sbe.*;
+import com.oms.sbe.MessageHeaderEncoder;
+import com.oms.sbe.NewOrderCommandEncoder;
+import com.oms.sbe.OrderType;
+import com.oms.sbe.Side;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
@@ -20,7 +22,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 public final class FixCommandTranslator
 {
     private final MessageHeaderEncoder  headerEncoder = new MessageHeaderEncoder();
-    private final PlaceOrderCommandEncoder cmdEncoder  = new PlaceOrderCommandEncoder();
+    private final NewOrderCommandEncoder cmdEncoder  = new NewOrderCommandEncoder();
 
     // orderId counter — starts at 1001 to avoid collision with OmsApp's pre-seeded orders.
     // TODO(POC): use a shared atomic counter or coordinate with OmsApp in production.
@@ -36,7 +38,7 @@ public final class FixCommandTranslator
     }
 
     /**
-     * Encodes a {@link PlaceOrderCommand} into {@code outBuf} at offset 0.
+     * Encodes a {@link NewOrderCommandEncoder} into {@code outBuf} at offset 0.
      *
      * <p>Copies {@code symbol}, {@code side}, {@code ordType}, {@code price},
      * and {@code orderQty} from the decoded NOS. Does NOT copy FIX-specific
@@ -56,9 +58,9 @@ public final class FixCommandTranslator
         cmdEncoder
             .sequenceNumber(0L)               // stamped by OmsApp.SequencerAgent
             .orderId(orderId)
-            .symbol(nos.symbol())             // String copy — POC acceptable
-            .side(nos.side())
-            .ordType(nos.ordType());
+            .instrument(nos.symbol())             // String copy — POC acceptable
+            .side(nos.side() == SideEnum.BUY ? Side.BUY : Side.SELL)
+            .orderType(nos.ordType() == OrdTypeEnum.LIMIT ? OrderType.LIMIT : OrderType.MARKET);
 
         // Pass Decimal64 mantissa+exponent through unchanged — no re-scaling needed
         // because FixSessionHandler already encodes price/qty with exponent=-scale().
@@ -66,10 +68,10 @@ public final class FixCommandTranslator
             .mantissa(nos.price().mantissa())
             .exponent(nos.price().exponent());
 
-        cmdEncoder.orderQty()
+        cmdEncoder.quantity()
             .mantissa(nos.orderQty().mantissa())
             .exponent(nos.orderQty().exponent());
 
-        return MessageHeaderEncoder.ENCODED_LENGTH + PlaceOrderCommandEncoder.BLOCK_LENGTH;
+        return MessageHeaderEncoder.ENCODED_LENGTH + NewOrderCommandEncoder.BLOCK_LENGTH;
     }
 }

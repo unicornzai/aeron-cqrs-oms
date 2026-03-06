@@ -4,7 +4,6 @@ include(
     "oms-sbe",
     "oms-common",
     "oms-sequencer",
-    "oms-ingress",
     "oms-event-handlers",
     "oms-read-model:oms-read-model-database",
     "oms-read-model:oms-read-model-viewserver",

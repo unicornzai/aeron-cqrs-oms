@@ -265,8 +265,9 @@ public class ViewServerReadModel implements Agent {
                 acceptedDecoder.side().name(),
                 acceptedDecoder.orderType().name(),
                 acceptedDecoder.timeInForce().name(),
-                acceptedDecoder.price(),
-                acceptedDecoder.quantity(),
+0L, 0L,
+//                acceptedDecoder.price(),
+//                acceptedDecoder.quantity(),
                 OrderStatus.OPEN);
 
         orders.put(view.orderId, view);

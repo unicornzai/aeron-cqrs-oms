@@ -4,7 +4,6 @@ import com.oms.aggregate.client.OrderAggregateAgent;
 import com.oms.api.OrderQueryServer;
 import com.oms.common.OmsStreams;
 import com.oms.handlers.FillSimulatorHandler;
-import com.oms.ingress.OrderIngressAgent;
 import com.oms.readmodel.db.DatabaseReadModelStub;
 import com.oms.readmodel.view.ViewServerReadModel;
 import com.oms.sequencer.SequencerAgent;
@@ -97,7 +96,7 @@ public class OmsApp {
         // ── 6. Agents ─────────────────────────────────────────────────────────
         final SequencerAgent        sequencer  = new SequencerAgent(
                 commandIngressSub, eventIngressSub, commandStreamPub, eventStreamPub);
-        final OrderIngressAgent     ingress    = new OrderIngressAgent(commandIngressPub);
+//        final OrderIngressAgent     ingress    = new OrderIngressAgent(commandIngressPub);
         // Aggregate replays the Event Stream on startup to rebuild in-memory order state.
         // TODO(POC): size term buffer based on max replay duration × msg rate
         final OrderAggregateAgent   aggregate  = new OrderAggregateAgent(
@@ -118,7 +117,7 @@ public class OmsApp {
         // latency vs CPU for a POC. Swap to BusySpinIdleStrategy for minimal latency in prod.
         final List<AgentRunner> runners = List.of(
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, sequencer),
-                new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, ingress),
+//                new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, ingress),
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, aggregate),
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, fillSim),
                 new AgentRunner(new YieldingIdleStrategy(), Throwable::printStackTrace, null, dbModel),

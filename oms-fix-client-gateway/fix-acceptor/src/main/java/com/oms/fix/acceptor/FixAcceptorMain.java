@@ -4,7 +4,7 @@ import com.oms.common.OmsStreams;
 import com.oms.aggregate.fix.FixOrderAggregateAgent;
 import com.oms.aggregate.fix.FixOrderState;
 import com.oms.fix.sbe.MessageHeaderDecoder;
-import com.oms.fix.sbe.PlaceOrderCommandDecoder;
+import com.oms.sbe.NewOrderCommandDecoder;
 import io.aeron.Aeron;
 import io.aeron.Publication;
 import io.aeron.Subscription;
@@ -141,10 +141,9 @@ public class FixAcceptorMain
         final FixExecReportBridge execReportBridge = new FixExecReportBridge(fixStateByOrderId, activeSessions);
 
         // M7 verification — two independent check points on the shared OMS streams.
-        final Subscription         verifyPlaceOrderSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
+        final Subscription         verifyNewOrderSub = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.COMMAND_STREAM);
         final Subscription         verifyEventSub      = omsAeron.addSubscription(OmsStreams.IPC, OmsStreams.EVENT_STREAM);
         final MessageHeaderDecoder verifyHeaderDecoder = new MessageHeaderDecoder();
-        final PlaceOrderCommandDecoder verifyPlaceDecoder = new PlaceOrderCommandDecoder();
 
         // ── Step 3: Configure FixEngine with Artio's own archive ─────────────
         // aeronContext: pass explicit dir + 30s timeout to Artio's internal Aeron client.
@@ -199,7 +198,7 @@ public class FixAcceptorMain
                 library.close();
                 fixAggRunner.close();
                 eventStreamSub.close();
-                verifyPlaceOrderSub.close();
+                verifyNewOrderSub.close();
                 verifyEventSub.close();
                 fixAggCommandSub.close();
                 internalCommandPub.close();
@@ -221,7 +220,7 @@ public class FixAcceptorMain
             library.close();
             fixAggRunner.close();
             eventStreamSub.close();
-            verifyPlaceOrderSub.close();
+            verifyNewOrderSub.close();
             verifyEventSub.close();
             fixAggCommandSub.close();
             internalCommandPub.close();
@@ -241,33 +240,33 @@ public class FixAcceptorMain
             // Polled on this thread (same as library.poll) so session.trySend() is thread-safe.
             eventStreamSub.poll(execReportBridge, 10);
 
-            // Verify 1: PlaceOrderCommand on COMMAND_STREAM(1) — confirms FIX→domain translation.
-            verifyPlaceOrderSub.poll((buf, off, len, hdr) ->
-            {
-                verifyHeaderDecoder.wrap(buf, off);
-                if (verifyHeaderDecoder.templateId() == PlaceOrderCommandDecoder.TEMPLATE_ID)
-                {
-                    verifyPlaceDecoder.wrapAndApplyHeader(buf, off, verifyHeaderDecoder);
-                    System.out.printf("[M7-Verify] PlaceOrderCommand on COMMAND_STREAM: orderId=%d symbol=%s side=%s seq=%d%n",
-                        verifyPlaceDecoder.orderId(),
-                        verifyPlaceDecoder.symbol(),
-                        verifyPlaceDecoder.side(),
-                        verifyPlaceDecoder.sequenceNumber());
-                }
-            }, 10);
-
-            // Verify 2: OrderAcceptedEvent(100) / OrderRejectedEvent(101) on EVENT_STREAM(2)
-            // — confirms OmsApp's OrderAggregateAgent processed the PlaceOrderCommand.
-            verifyEventSub.poll((buf, off, len, hdr) ->
-            {
-                verifyHeaderDecoder.wrap(buf, off);
-                final int tid = verifyHeaderDecoder.templateId();
-                if (tid == 100) {
-                    System.out.println("[M7-Verify] OrderAcceptedEvent on EVENT_STREAM — order live!");
-                } else if (tid == 101) {
-                    System.out.println("[M7-Verify] OrderRejectedEvent on EVENT_STREAM — order rejected.");
-                }
-            }, 10);
+//            // Verify 1: PlaceOrderCommand on COMMAND_STREAM(1) — confirms FIX→domain translation.
+//            verifyNewOrderSub.poll((buf, off, len, hdr) ->
+//            {
+//                verifyHeaderDecoder.wrap(buf, off);
+//                if (verifyHeaderDecoder.templateId() == NewOrderCommandDecoder.TEMPLATE_ID)
+//                {
+//                    verifyNewOrderDecoder.wrapAndApplyHeader(buf, off, verifyHeaderDecoder);
+//                    System.out.printf("[M7-Verify] PlaceOrderCommand on COMMAND_STREAM: orderId=%d symbol=%s side=%s seq=%d%n",
+//                        verifyPlaceDecoder.orderId(),
+//                        verifyPlaceDecoder.symbol(),
+//                        verifyPlaceDecoder.side(),
+//                        verifyPlaceDecoder.sequenceNumber());
+//                }
+//            }, 10);
+//
+//            // Verify 2: OrderAcceptedEvent(100) / OrderRejectedEvent(101) on EVENT_STREAM(2)
+//            // — confirms OmsApp's OrderAggregateAgent processed the PlaceOrderCommand.
+//            verifyEventSub.poll((buf, off, len, hdr) ->
+//            {
+//                verifyHeaderDecoder.wrap(buf, off);
+//                final int tid = verifyHeaderDecoder.templateId();
+//                if (tid == 100) {
+//                    System.out.println("[M7-Verify] OrderAcceptedEvent on EVENT_STREAM — order live!");
+//                } else if (tid == 101) {
+//                    System.out.println("[M7-Verify] OrderRejectedEvent on EVENT_STREAM — order rejected.");
+//                }
+//            }, 10);
         }
     }
 }
